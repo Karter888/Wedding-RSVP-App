@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { ATTENDANCE_OPTIONS } from '../utils/constants'
+import { MAX_PLUS_ONES_PER_RSVP } from '../utils/constants'
 
 const FieldError = ({ message }) =>
   message ? <p className="mt-1 text-xs text-red-600">{message}</p> : null
@@ -45,6 +46,17 @@ export const RsvpForm = ({
   return (
     <form className="space-y-4" onSubmit={onSubmit}>
       <div>
+        <label className="text-sm font-semibold text-charcoal">Invited From *</label>
+        <input
+          className="mt-1 w-full rounded-lg border border-rosewood/20 bg-cream px-3 py-2 text-sm"
+          value={values.invitedSide === 'groom' ? "Man's Side" : values.invitedSide === 'bride' ? "Woman's Side" : ''}
+          readOnly
+          placeholder="Choose side first"
+        />
+        <FieldError message={errors.invitedSide} />
+      </div>
+
+      <div>
         <label className="text-sm font-semibold text-charcoal">Full Name *</label>
         <input
           className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm"
@@ -77,10 +89,12 @@ export const RsvpForm = ({
         <input
           type="number"
           min={0}
+          max={MAX_PLUS_ONES_PER_RSVP}
           className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm"
           value={values.guestCount}
           onChange={(event) => onGuestCountChange(event.target.value)}
         />
+        <p className="mt-1 text-xs text-charcoal/60">Maximum accompanying guests: {MAX_PLUS_ONES_PER_RSVP}</p>
         <FieldError message={errors.guestCount} />
       </div>
 
@@ -90,7 +104,7 @@ export const RsvpForm = ({
       <div className="grid gap-4 sm:grid-cols-2">
         {/* ── Fix 6: +260 locked prefix ───────────────────────────────── */}
         <div>
-          <label className="text-sm font-semibold text-charcoal">Phone Number</label>
+          <label className="text-sm font-semibold text-charcoal">Phone Number | WhatsApp recommended</label>
           <div className="mt-1 flex rounded-lg border border-rosewood/20 bg-white overflow-hidden">
             <span className="flex items-center bg-rosewood/8 px-3 text-sm font-semibold text-rosewood border-r border-rosewood/20 select-none">
               +260

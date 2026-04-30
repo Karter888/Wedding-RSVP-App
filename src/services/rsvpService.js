@@ -6,8 +6,10 @@ const mapGuestRow = (row) => ({
   guestId: row.guest_id,
   fullName: row.full_name,
   attendanceStatus: row.attendance_status,
+  invitedSide: row.invited_side,
   guestCount: row.guest_count,
   guestNames: row.guest_names || [],
+  accompanyingCheckedIn: Number(row.accompanying_checked_in || 0),
   phone: row.phone,
   email: row.email,
   token: row.token,
@@ -19,8 +21,6 @@ const mapGuestRow = (row) => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 })
-
-const nowIso = () => new Date().toISOString()
 
 // Normalise phone to +260XXXXXXXXX before saving.
 const normalisePhone = (raw) => {
@@ -57,6 +57,7 @@ export const submitRsvp = async (formData) => {
     guestId,
     fullName: formData.fullName,
     attendanceStatus: formData.attendanceStatus,
+    invitedSide: formData.invitedSide,
     guestCount: Number(formData.guestCount || 0),
     guestNames: formData.guestNames,
     phone: normalisePhone(formData.phone),
@@ -96,8 +97,12 @@ export const fetchGuests = async (filters = {}) => {
   return (data?.guests || []).map(mapGuestRow)
 }
 
-export const updateCheckInStatus = async (guestId, checkedIn = true) => {
-  await invokeEdgeFunction('admin-update-check-in', { guestId, checkedIn })
+export const updateCheckInStatus = async (guestId, checkedIn = true, accompanyingCheckedIn) => {
+  await invokeEdgeFunction('admin-update-check-in', {
+    guestId,
+    checkedIn,
+    accompanyingCheckedIn,
+  })
 }
 
 export const scanAndCheckIn = async (qrPayload) => {
@@ -122,4 +127,23 @@ export const sendInvitationMessage = async ({ guestId }) => {
 
 export const sendThankYouBatches = async () => {
   return invokeEdgeFunction('send-thank-you-messages', { batchSize: 100 })
+}
+
+export const buildWaMeLinkForGuest = (guest) => {
+  if (!guest?.phone) return null
+
+  const phoneDigits = guest.phone.replace(/\D/g, '')
+  if (!phoneDigits) return null
+
+  const ticketUrl = guest.ticketUrl || `${window.location.origin}/ticket/${guest.guestId}`
+  const message = [
+    `Hello ${guest.fullName},`,
+    '',
+    'Just a reminder and here is a copy of your QR code ticket.',
+    ticketUrl,
+    '',
+    'Please keep it ready for check-in at the entrance.',
+  ].join('\n')
+
+  return `https://wa.me/${phoneDigits}?text=${encodeURIComponent(message)}`
 }

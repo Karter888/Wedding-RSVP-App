@@ -160,19 +160,4 @@ For local testing only, keep APP_BASE_URL as `https://localhost:5173` in your lo
 - Export PDF and verify tables/checkboxes render correctly.
 - Scan a ticket from `/scanner` and confirm check-in status updates.
 
-## Image Optimization Guidance
 
-The largest asset from build output is `src/assets/photo2-515.jpg` (very large). To reduce bundle size and improve load time:
-
-1. Create a web-optimized copy of the hero image (WebP preferred, JPEG as fallback).
-2. Resize to practical display width (for example, 1600px to 2200px max for hero use).
-3. Target quality around 70 to 82 and compare visually.
-4. Replace the import in `src/pages/InvitationPage.jsx` with the optimized file.
-
-Example using ImageMagick:
-
-```bash
-magick src/assets/photo2-515.jpg -resize 1920x -quality 80 src/assets/photo2-515.optimized.webp
-```
-
-Then update the import in `src/pages/InvitationPage.jsx` and rebuild.

@@ -40,8 +40,21 @@ Deno.serve(async (request) => {
       return jsonResponse({ error: 'Invalid token' }, 403)
     }
 
+    const guestCount = Number(guest.guest_count || 0)
+    const accompanyingCheckedIn = Number(guest.accompanying_checked_in || 0)
+    const remainingAccompanying = Math.max(0, guestCount - accompanyingCheckedIn)
+
     if (guest.checked_in) {
-      return jsonResponse({ status: 'used', message: 'Already used.' })
+      return jsonResponse({
+        status: 'used',
+        guestId,
+        requiresManualAccompanyingCheckIn: remainingAccompanying > 0,
+        remainingAccompanying,
+        message:
+          remainingAccompanying > 0
+            ? `Primary guest already checked in. ${remainingAccompanying} accompanying guest(s) still pending manual check-in.`
+            : 'Already used.',
+      })
     }
 
     await supabase
@@ -52,7 +65,16 @@ Deno.serve(async (request) => {
       })
       .eq('guest_id', guestId)
 
-    return jsonResponse({ status: 'valid', message: 'Check-in successful.' })
+    return jsonResponse({
+      status: 'valid',
+      guestId,
+      requiresManualAccompanyingCheckIn: guestCount > 0,
+      remainingAccompanying: remainingAccompanying,
+      message:
+        guestCount > 0
+          ? `Primary guest checked in. Please manually check in ${remainingAccompanying} accompanying guest(s) as they arrive.`
+          : 'Check-in successful.',
+    })
   } catch (error) {
     return jsonResponse({ error: error.message }, 500)
   }

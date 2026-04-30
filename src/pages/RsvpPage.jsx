@@ -1,17 +1,19 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { RsvpForm } from '../components/RsvpForm'
 import { SectionCard } from '../components/SectionCard'
 import { sendTicketFallbackEmail } from '../services/emailService'
-import { submitRsvp, sendInvitationMessage } from '../services/rsvpService'
+import { submitRsvp } from '../services/rsvpService'
 import {
   clearFailedForm,
   readFailedForm,
   saveFailedForm,
 } from '../services/storageService'
 import { validateRsvp } from '../utils/validation'
+import { MAX_PLUS_ONES_PER_RSVP } from '../utils/constants'
 
 const initialState = {
+  invitedSide: '',
   fullName: '',
   attendanceStatus: '',
   guestCount: 0,
@@ -28,7 +30,18 @@ export const RsvpPage = () => {
   const [result, setResult] = useState(null)
 
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const failedPayload = readFailedForm()
+
+  useEffect(() => {
+    const side = searchParams.get('side')
+    if (side !== 'groom' && side !== 'bride') {
+      navigate('/rsvp/side', { replace: true })
+      return
+    }
+
+    setValues((prev) => ({ ...prev, invitedSide: side }))
+  }, [navigate, searchParams])
 
   const onChange = (field, value) => {
     if (field.startsWith('guestNames.')) {
@@ -43,7 +56,7 @@ export const RsvpPage = () => {
   }
 
   const onGuestCountChange = (nextCountValue) => {
-    const guestCount = Math.max(0, Number(nextCountValue) || 0)
+    const guestCount = Math.min(MAX_PLUS_ONES_PER_RSVP, Math.max(0, Number(nextCountValue) || 0))
     setValues((prev) => ({
       ...prev,
       guestCount,
@@ -63,15 +76,7 @@ export const RsvpPage = () => {
 
     try {
       const ticket = await submitRsvp(payload)
-      let whatsappStatus = 'pending'
       let emailStatus = 'pending'
-
-      try {
-        const invitationResult = await sendInvitationMessage({ guestId: ticket.guestId })
-        whatsappStatus = invitationResult?.status === 'sent' ? 'sent' : 'failed'
-      } catch {
-        whatsappStatus = 'failed'
-      }
 
       try {
         const emailResult = await sendTicketFallbackEmail({
@@ -92,7 +97,7 @@ export const RsvpPage = () => {
         emailStatus = payload.email ? 'failed' : 'skipped'
       }
 
-      const messageStatus = `WhatsApp: ${whatsappStatus} | Email: ${emailStatus}`
+      const messageStatus = `Email: ${emailStatus} | WhatsApp: manual from admin dashboard`
 
       clearFailedForm()
       setResult({ ...ticket, messageStatus })
@@ -122,7 +127,7 @@ export const RsvpPage = () => {
         <SectionCard className="mx-auto max-w-lg text-center">
           <p className="text-xs uppercase tracking-widest text-rosewood">RSVP Confirmed</p>
           <h1 className="mt-2 font-heading text-5xl text-charcoal">Thank You</h1>
-          <img src={result.qrCodeDataUrl} alt="RSVP QR" className="mx-auto mt-6 w-56 rounded-xl" />
+          <img src={result.qrCodeDataUrl} alt="RSVP QR" loading="lazy" className="mx-auto mt-6 w-56 rounded-xl" />
           <p className="mt-4 text-sm text-charcoal/80">
             Message status: <span className="font-semibold">{result.messageStatus}</span>
           </p>
@@ -152,6 +157,9 @@ export const RsvpPage = () => {
         <h1 className="mt-2 font-heading text-5xl text-charcoal">Reserve Your Spot</h1>
         <p className="mt-2 text-sm text-charcoal/75">
           Fill in your details and we will generate your personal entry QR code.
+        </p>
+        <p className="mt-1 text-xs text-charcoal/60">
+          You can register up to {MAX_PLUS_ONES_PER_RSVP} accompanying guests per RSVP.
         </p>
 
         <div className="mt-6">

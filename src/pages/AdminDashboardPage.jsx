@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
-import { jsPDF } from 'jspdf'
 import {
   SignedIn,
   SignedOut,
@@ -9,8 +8,8 @@ import {
 } from '@clerk/clerk-react'
 import {
   fetchGuests,
+  buildWaMeLinkForGuest,
   scanAndCheckIn,
-  sendInvitationMessage,
   sendThankYouBatches,
   updateCheckInStatus,
 } from '../services/rsvpService'
@@ -31,6 +30,7 @@ export const AdminDashboardPage = () => {
   const [waMeLink, setWaMeLink] = useState('')
   const [scanResult, setScanResult] = useState('')
   const [loading, setLoading] = useState(true)
+  const [manualCheckInGuest, setManualCheckInGuest] = useState(null)
 
   const refreshGuests = useCallback(async () => {
     setLoading(true)
@@ -40,6 +40,7 @@ export const AdminDashboardPage = () => {
     })
     setGuests(records)
     setLoading(false)
+    return records
   }, [filters.checkedIn, filters.status])
 
   useEffect(() => {
@@ -78,23 +79,36 @@ export const AdminDashboardPage = () => {
   }, [guests])
 
   const handleResend = async (guestId) => {
-    const result = await sendInvitationMessage({ guestId })
-    if (result?.status === 'sent') {
-      setActionMessage('Invitation sent via WhatsApp successfully.')
+    const guest = guests.find((entry) => entry.guestId === guestId)
+    const link = buildWaMeLinkForGuest(guest)
+
+    if (!link) {
+      setActionMessage('No phone number available for this guest.')
       setWaMeLink('')
-    } else if (result?.waMeLink) {
-      setActionMessage('Twilio could not deliver this message. Use the wa.me fallback link below.')
-      setWaMeLink(result.waMeLink)
-    } else {
-      setActionMessage(result?.message || 'Invitation was not sent. Check function logs/config.')
-      setWaMeLink('')
+      return
     }
+
+    setActionMessage('Open the wa.me link and send the reminder with QR ticket manually.')
+    setWaMeLink(link)
+    window.open(link, '_blank', 'noopener,noreferrer')
+  }
+
+  const handleManualCheckIn = async (guest) => {
+    await updateCheckInStatus(guest.guestId, true, Number(guest.accompanyingCheckedIn || 0))
     await refreshGuests()
   }
 
-  const handleManualCheckIn = async (guestId) => {
-    await updateCheckInStatus(guestId, true)
-    await refreshGuests()
+  const handleAccompanyingCheckIn = async (guest, delta) => {
+    const current = Number(guest.accompanyingCheckedIn || 0)
+    const total = Number(guest.guestCount || 0)
+    const next = Math.min(total, Math.max(0, current + delta))
+
+    if (next === current) return
+
+    await updateCheckInStatus(guest.guestId, true, next)
+    const records = await refreshGuests()
+    const updated = records.find((entry) => entry.guestId === guest.guestId)
+    setManualCheckInGuest(updated || null)
   }
 
   const handleScan = async (detectedCodes) => {
@@ -105,13 +119,19 @@ export const AdminDashboardPage = () => {
     try {
       const result = await scanAndCheckIn(detectedCodes[0].rawValue)
       setScanResult(result.message)
-      await refreshGuests()
+      const records = await refreshGuests()
+
+      if (result?.requiresManualAccompanyingCheckIn && result?.guestId) {
+        const matched = records.find((entry) => entry.guestId === result.guestId)
+        setManualCheckInGuest(matched || null)
+      }
     } catch (error) {
       setScanResult(error.message || 'Invalid QR code')
     }
   }
 
-  const exportPdf = () => {
+  const exportPdf = async () => {
+    const { jsPDF } = await import('jspdf')
     const doc = new jsPDF()
     const pageHeight = doc.internal.pageSize.getHeight()
     const margin = 14
@@ -310,10 +330,11 @@ export const AdminDashboardPage = () => {
                 <table className="min-w-full text-left text-sm">
                   <thead className="bg-cream text-charcoal">
                     <tr>
-                      <th className="px-3 py-2">Name</th>
+                      <th className="px-3 py-2">Guest Name</th>
                       <th className="px-3 py-2">Status</th>
-                      <th className="px-3 py-2">Invited</th>
-                      <th className="px-3 py-2">Accompanying Guests</th>
+                      <th className="px-3 py-2">Total Party</th>
+                      <th className="px-3 py-2">Plus Ones</th>
+                      <th className="px-3 py-2">Accompanying Check-in</th>
                       <th className="px-3 py-2">Contact</th>
                       <th className="px-3 py-2">Checked-in</th>
                       <th className="px-3 py-2">Actions</th>
@@ -322,18 +343,26 @@ export const AdminDashboardPage = () => {
                   <tbody>
                     {loading && (
                       <tr>
-                        <td className="px-3 py-2" colSpan={7}>
+                        <td className="px-3 py-2" colSpan={8}>
                           Loading guests...
                         </td>
                       </tr>
                     )}
                     {!loading &&
                       visibleGuests.map((guest) => (
-                        <tr key={guest.guestId} className="border-t border-rosewood/10">
+                        <tr
+                          key={guest.guestId}
+                          className={`border-t border-rosewood/10 ${guest.checkedIn ? 'bg-emerald-100/65' : ''}`}
+                        >
                           <td className="px-3 py-2">{guest.fullName}</td>
                           <td className="px-3 py-2">{guest.attendanceStatus}</td>
                           <td className="px-3 py-2">{Number(guest.guestCount || 0) + 1}</td>
                           <td className="px-3 py-2">{guest.guestNames?.filter(Boolean).join(', ') || '-'}</td>
+                          <td className="px-3 py-2">
+                            {Number(guest.guestCount || 0) > 0
+                              ? `${Number(guest.accompanyingCheckedIn || 0)} / ${Number(guest.guestCount || 0)}`
+                              : '-'}
+                          </td>
                           <td className="px-3 py-2">{guest.phone || guest.email || 'N/A'}</td>
                           <td className="px-3 py-2">{guest.checkedIn ? 'Yes' : 'No'}</td>
                           <td className="flex gap-2 px-3 py-2">
@@ -341,14 +370,23 @@ export const AdminDashboardPage = () => {
                               onClick={() => handleResend(guest.guestId)}
                               className="rounded-full border border-rosewood/30 px-3 py-1 text-xs text-rosewood"
                             >
-                              Resend QR
+                              Open WhatsApp
                             </button>
                             <button
-                              onClick={() => handleManualCheckIn(guest.guestId)}
+                              onClick={() => handleManualCheckIn(guest)}
                               className="rounded-full bg-slategreen px-3 py-1 text-xs text-white"
+                              disabled={guest.checkedIn}
                             >
                               Manual check-in
                             </button>
+                            {Number(guest.guestCount || 0) > 0 && (
+                              <button
+                                onClick={() => setManualCheckInGuest(guest)}
+                                className="rounded-full border border-slategreen/40 px-3 py-1 text-xs text-slategreen"
+                              >
+                                Accompanying
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -366,6 +404,45 @@ export const AdminDashboardPage = () => {
               {scanResult && (
                 <p className="rounded-lg bg-cream px-3 py-2 text-sm text-charcoal">{scanResult}</p>
               )}
+            </div>
+          )}
+
+          {manualCheckInGuest && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-soft">
+                <p className="text-xs uppercase tracking-wider text-rosewood">Manual check-in</p>
+                <h3 className="mt-1 font-heading text-3xl text-charcoal">{manualCheckInGuest.fullName}</h3>
+                <p className="mt-2 text-sm text-charcoal/80">
+                  Primary guest is checked in. Update accompanying guests as they arrive.
+                </p>
+
+                <div className="mt-4 rounded-lg border border-rosewood/15 bg-cream p-3">
+                  <p className="text-sm text-charcoal">
+                    Accompanying checked in: <span className="font-semibold">{Number(manualCheckInGuest.accompanyingCheckedIn || 0)}</span> / {Number(manualCheckInGuest.guestCount || 0)}
+                  </p>
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={() => handleAccompanyingCheckIn(manualCheckInGuest, -1)}
+                    className="rounded-full border border-rosewood/30 px-4 py-2 text-sm text-rosewood"
+                  >
+                    -1
+                  </button>
+                  <button
+                    onClick={() => handleAccompanyingCheckIn(manualCheckInGuest, 1)}
+                    className="rounded-full bg-slategreen px-4 py-2 text-sm text-white"
+                  >
+                    +1 arrived
+                  </button>
+                  <button
+                    onClick={() => setManualCheckInGuest(null)}
+                    className="ml-auto rounded-full border border-charcoal/20 px-4 py-2 text-sm text-charcoal"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

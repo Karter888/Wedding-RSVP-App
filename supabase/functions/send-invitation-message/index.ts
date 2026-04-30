@@ -1,4 +1,3 @@
-import twilio from 'npm:twilio@5.6.0'
 import { createServiceClient } from '../_shared/supabase.ts'
 import { jsonResponse, optionsResponse } from '../_shared/cors.ts'
 
@@ -98,66 +97,22 @@ Deno.serve(async (request) => {
       }, 200)
     }
 
-    // ── Attempt Twilio WhatsApp ───────────────────────────────────────────
-    const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID')
-    const authToken = Deno.env.get('TWILIO_AUTH_TOKEN')
-    const whatsappFrom = Deno.env.get('TWILIO_WHATSAPP_FROM')
-
-    if (accountSid && authToken && whatsappFrom) {
-      try {
-        const client = twilio(accountSid, authToken)
-
-        await client.messages.create({
-          from: whatsappFrom,
-          to: `whatsapp:${normalisedPhone}`,
-          body: messageBody,
-        })
-
-        await supabase.from('guests').update({
-          message_status: 'sent',
-          message_channel: 'whatsapp',
-          message_error: null,
-          updated_at: new Date().toISOString(),
-        }).eq('guest_id', guestId)
-
-        return jsonResponse({
-          status: 'sent',
-          channel: 'whatsapp',
-          phone: normalisedPhone,
-        })
-      } catch (twilioError) {
-        // ── Twilio failed — log the error then fall through to wa.me ─────
-        const errorMessage = twilioError?.message || 'Twilio send failed.'
-
-        await supabase.from('guests').update({
-          message_status: 'failed',
-          message_channel: 'wame_fallback',
-          message_error: errorMessage,
-          updated_at: new Date().toISOString(),
-        }).eq('guest_id', guestId)
-
-        // Fall through to wa.me response below
-        console.error(`Twilio failed for guest ${guestId}: ${errorMessage}`)
-      }
-    }
-
-    // ── wa.me fallback — unique pre-filled link per guest ─────────────────
-    // Either Twilio creds are missing OR Twilio threw an error.
-    // The admin receives a ready-to-tap link with the guest's personal message.
+        // wa.me manual-send link per guest.
     const waMeLink = buildWaMeLink(normalisedPhone, messageBody)
 
     await supabase.from('guests').update({
-      message_status: 'failed',
-      message_channel: 'wame_fallback',
+          message_status: 'pending',
+          message_channel: 'wame_manual',
+          message_error: null,
       updated_at: new Date().toISOString(),
     }).eq('guest_id', guestId)
 
     return jsonResponse({
-      status: 'wame_fallback',
-      channel: 'wame_fallback',
+          status: 'manual',
+          channel: 'wame_manual',
       phone: normalisedPhone,
       waMeLink,
-      message: 'Twilio unavailable. Use the wa.me link below to send this guest their ticket.',
+          message: 'Use the wa.me link below to send this guest their ticket manually.',
       messagePreview: messageBody,
     })
   } catch (error) {

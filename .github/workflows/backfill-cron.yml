@@ -1,0 +1,27 @@
+name: Backfill Guests
+
+on:
+  schedule:
+    - cron: '0 * * * *' # hourly
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call backfill function
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "Missing secrets SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"; exit 1
+          fi
+          echo "Invoking backfill at $SUPABASE_URL/functions/v1/backfill-guests"
+          curl -sSf -X POST "$SUPABASE_URL/functions/v1/backfill-guests" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            -o response.json || (echo "Backfill request failed"; cat response.json; exit 1)
+          echo "Backfill response:"; cat response.json

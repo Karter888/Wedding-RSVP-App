@@ -1,10 +1,27 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
-export const PublicNavbar = () => (
-  <header className="sticky top-0 z-40 border-b border-rosewood/10 bg-cream/85 backdrop-blur">
+export const PublicNavbar = () => {
+  const [isScrolled, setIsScrolled] = useState(false)
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.scrollY > 50) {
+        setIsScrolled(true)
+      } else {
+        setIsScrolled(false)
+      }
+    }
+
+    window.addEventListener('scroll', handleScroll)
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  return (
+    <header className="sticky top-0 z-40 border-b border-rosewood/10 bg-cream/85 backdrop-blur">
     <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
       <p className="font-heading text-2xl text-rosewood">T + M Welcomes You To The Big Event</p>
-      <nav className="flex items-center gap-3 text-sm font-medium text-charcoal">
+      <nav className={`flex items-center gap-3 text-sm font-medium text-charcoal transition-opacity duration-300 ${isScrolled ? 'pointer-events-none opacity-0' : 'opacity-100'}`}>
         <a href="#details" className="hover:text-rosewood">
           Details
         </a>
@@ -20,4 +37,5 @@ export const PublicNavbar = () => (
       </nav>
     </div>
   </header>
-)
+  )
+}

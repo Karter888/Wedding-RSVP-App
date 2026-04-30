@@ -13,11 +13,15 @@ export const InvitationPage = () => {
         <section
           className="grid gap-6 overflow-hidden rounded-3xl border border-rosewood/15 bg-white/70 p-5 shadow-soft backdrop-blur md:grid-cols-2 md:p-8"
         >
-          <img
-            src={heroImg}
-            alt="Couple portrait"
-            className="h-80 w-full rounded-2xl object-cover md:h-full"
-          />
+          <picture>
+            <source srcSet={heroImg.replace('.jpg', '.optimized.webp')} type="src\assets\photo2-515.jpg" />
+            <img
+              src={heroImg}
+              alt="Couple portrait"
+              loading="lazy"
+              className="h-80 w-full rounded-2xl object-cover md:h-full"
+            />
+          </picture>
           <div className="flex flex-col justify-center">
             <p className="text-xs uppercase tracking-[0.35em] text-rosewood">Together With Their Families</p>
             <h1 className="mt-3 font-heading text-5xl text-charcoal sm:text-6xl">
@@ -27,7 +31,7 @@ export const InvitationPage = () => {
               joyfully invite you to celebrate their wedding ceremony and reception.
             </p>
             <Link
-              to="/rsvp"
+              to="/rsvp/side"
               className="mt-6 inline-flex w-fit rounded-full bg-rosewood px-6 py-3 text-sm font-semibold text-cream hover:bg-rosewood/90"
             >
               Register Now
