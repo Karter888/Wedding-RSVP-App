@@ -12,6 +12,6 @@ export const MAX_TOTAL_INVITED = 500
 export const MAX_PLUS_ONES_PER_RSVP = 2
 
 export const INVITE_SIDE_OPTIONS = [
-  { value: 'groom', label: "Man's Side" },
-  { value: 'bride', label: "Woman's Side" },
+  { value: 'groom', label: "Groom's Side" },
+  { value: 'bride', label: "Bride's Side" },
 ]

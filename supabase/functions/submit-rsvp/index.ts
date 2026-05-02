@@ -63,7 +63,7 @@ Deno.serve(async (request: Request) => {
     }
 
     if (invitedSide !== 'groom' && invitedSide !== 'bride') {
-      return jsonResponse({ error: 'Invalid invited side.' }, 400)
+      return jsonResponse({ error: "Invalid invitation side. Use 'groom' or 'bride'." }, 400)
     }
 
     const safeGuestCount = Number(guestCount || 0)

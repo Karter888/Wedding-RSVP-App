@@ -12,7 +12,7 @@ export const validateRsvp = (values) => {
   }
 
   if (!values.invitedSide) {
-    errors.invitedSide = 'Select which side invited you.'
+    errors.invitedSide = "Select either Groom's Side or Bride's Side."
   }
 
   if (!values.phone?.trim() && !values.email?.trim()) {

@@ -1,6 +1,16 @@
-import twilio from 'npm:twilio@5.6.0'
 import { createServiceClient } from '../_shared/supabase.ts'
 import { jsonResponse, optionsResponse } from '../_shared/cors.ts'
+
+type ThankYouPayload = {
+  batchSize?: number
+}
+
+const buildWaMeLink = (phone: string, guestName: string): string => {
+  const digits = phone.replace(/\D/g, '')
+  const message = `Thank you so much for celebrating with us, ${guestName}. We truly appreciate your presence on our special day. 💍`
+  const encoded = encodeURIComponent(message)
+  return `https://wa.me/${digits}?text=${encoded}`
+}
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -8,7 +18,7 @@ Deno.serve(async (request) => {
   }
 
   try {
-    const { batchSize = 100 } = await request.json().catch(() => ({}))
+    const { batchSize = 50 } = await request.json().catch(() => ({} as ThankYouPayload))
     const supabase = createServiceClient()
     const { data: guests, error } = await supabase
       .from('guests')
@@ -21,48 +31,31 @@ Deno.serve(async (request) => {
       throw error
     }
 
-    const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID')
-    const authToken = Deno.env.get('TWILIO_AUTH_TOKEN')
-    const whatsappFrom = Deno.env.get('TWILIO_WHATSAPP_FROM')
-
-    if (!accountSid || !authToken || !whatsappFrom) {
-      return jsonResponse({ error: 'Missing Twilio configuration' }, 500)
+    if (!guests || guests.length === 0) {
+      return jsonResponse({
+        message: 'No pending thank you messages.',
+        thankYouLinks: [],
+        total: 0,
+      })
     }
 
-    const client = twilio(accountSid, authToken)
-    let sent = 0
+    const thankYouLinks = guests.map((guest) => ({
+      guestId: guest.guest_id,
+      fullName: guest.full_name,
+      phone: guest.phone,
+      email: guest.email,
+      hasPhone: !!guest.phone,
+      waMeLink: guest.phone ? buildWaMeLink(guest.phone, guest.full_name) : null,
+      status: 'ready',
+    }))
 
-    for (const guest of guests || []) {
-      if (!guest.phone) {
-        continue
-      }
-
-      try {
-        await client.messages.create({
-          from: whatsappFrom,
-          to: `whatsapp:${guest.phone}`,
-          body: `Thank you for celebrating with us, ${guest.full_name}.`,
-        })
-
-        await supabase
-          .from('guests')
-          .update({
-            thank_you_sent: true,
-            thank_you_sent_at: new Date().toISOString(),
-          })
-          .eq('guest_id', guest.guest_id)
-
-        sent += 1
-      } catch {
-        await supabase
-          .from('guests')
-          .update({ thank_you_sent: false })
-          .eq('guest_id', guest.guest_id)
-      }
-    }
-
-    return jsonResponse({ sent })
+    return jsonResponse({
+      message: `Generated ${thankYouLinks.length} thank you message link(s).`,
+      thankYouLinks,
+      total: thankYouLinks.length,
+    })
   } catch (error) {
-    return jsonResponse({ error: error.message }, 500)
+    const message = error instanceof Error ? error.message : 'Failed to generate thank you links.'
+    return jsonResponse({ error: message }, 500)
   }
 })

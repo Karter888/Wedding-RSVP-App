@@ -49,7 +49,7 @@ export const RsvpForm = ({
         <label className="text-sm font-semibold text-charcoal">Invited From *</label>
         <input
           className="mt-1 w-full rounded-lg border border-rosewood/20 bg-cream px-3 py-2 text-sm"
-          value={values.invitedSide === 'groom' ? "Man's Side" : values.invitedSide === 'bride' ? "Woman's Side" : ''}
+          value={values.invitedSide === 'groom' ? "Groom's Side" : values.invitedSide === 'bride' ? "Bride's Side" : ''}
           readOnly
           placeholder="Choose side first"
         />

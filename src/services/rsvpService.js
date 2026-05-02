@@ -92,9 +92,18 @@ export const fetchGuests = async (filters = {}) => {
   const data = await invokeEdgeFunction('admin-list-guests', {
     attendanceStatus: filters.attendanceStatus,
     checkedIn: filters.checkedIn,
+    search: filters.search,
+    page: filters.page,
+    pageSize: filters.pageSize,
   })
 
-  return (data?.guests || []).map(mapGuestRow)
+  return {
+    guests: (data?.guests || []).map(mapGuestRow),
+    page: Number(data?.page || filters.page || 1),
+    pageSize: Number(data?.pageSize || filters.pageSize || 25),
+    total: Number(data?.total || 0),
+    totalPages: Number(data?.totalPages || 0),
+  }
 }
 
 export const updateCheckInStatus = async (guestId, checkedIn = true, accompanyingCheckedIn) => {
@@ -126,7 +135,14 @@ export const sendInvitationMessage = async ({ guestId }) => {
 }
 
 export const sendThankYouBatches = async () => {
-  return invokeEdgeFunction('send-thank-you-messages', { batchSize: 100 })
+  return invokeEdgeFunction('send-thank-you-messages', { batchSize: 50 })
+}
+
+export const markThankYouSent = async (guestIds = []) => {
+  if (!Array.isArray(guestIds) || guestIds.length === 0) {
+    return { marked: 0 }
+  }
+  return invokeEdgeFunction('mark-thank-you-sent', { guestIds })
 }
 
 export const buildWaMeLinkForGuest = (guest) => {

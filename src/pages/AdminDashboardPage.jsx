@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
 import {
   SignedIn,
@@ -11,15 +11,74 @@ import {
   buildWaMeLinkForGuest,
   scanAndCheckIn,
   sendThankYouBatches,
+  markThankYouSent,
   updateCheckInStatus,
 } from '../services/rsvpService'
 
-const tabStyles = (active) =>
-  `rounded-full px-4 py-2 text-sm font-semibold ${
-    active ? 'bg-rosewood text-cream' : 'border border-rosewood/25 text-rosewood'
-  }`
+const formatInvitedSideLabel = (side) => (side === 'groom' ? "Groom's Side" : "Bride's Side")
 
-const normalize = (input) => input?.toLowerCase() ?? ''
+const AccompanyingGuestList = ({ guest, onAdjust }) => {
+  const total = Number(guest.guestCount || 0)
+  const checkedIn = Number(guest.accompanyingCheckedIn || 0)
+  const guestNames = Array.isArray(guest.guestNames) ? guest.guestNames : []
+
+  return (
+    <div className="ml-4 space-y-2">
+      <div className="flex items-center justify-between text-sm">
+        <p className="font-semibold text-charcoal">Accompanying Guests</p>
+        <p className="text-xs text-charcoal/60">
+          {checkedIn} / {total} checked in
+        </p>
+      </div>
+
+      {guestNames.length > 0 ? (
+        <ul className="space-y-2">
+          {guestNames.map((name, idx) => {
+            const isCheckedIn = idx < checkedIn
+
+            return (
+              <li
+                key={`${guest.guestId}-accompanying-${idx}`}
+                className="flex items-center justify-between gap-3 rounded-lg border border-rosewood/10 bg-white/80 px-3 py-2 text-sm text-charcoal/80"
+              >
+                <div>
+                  <p className="font-medium text-charcoal">{name || `Guest ${idx + 1}`}</p>
+                  <p className="text-xs text-charcoal/50">Accompanying guest {idx + 1}</p>
+                </div>
+                <span
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider ${
+                    isCheckedIn ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {isCheckedIn ? 'Checked in' : 'Waiting'}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      ) : (
+        <p className="text-sm italic text-charcoal/60">No accompanying guest names provided</p>
+      )}
+
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button
+          onClick={() => onAdjust(1)}
+          disabled={checkedIn >= total}
+          className="rounded-full bg-slategreen px-3 py-1.5 text-xs font-semibold text-white hover:bg-slategreen/90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Mark next guest arrived
+        </button>
+        <button
+          onClick={() => onAdjust(-1)}
+          disabled={checkedIn <= 0}
+          className="rounded-full border border-rosewood/30 px-3 py-1.5 text-xs text-rosewood hover:bg-rosewood/5 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Undo last arrival
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export const AdminDashboardPage = () => {
   const [activeTab, setActiveTab] = useState('overview')
@@ -31,17 +90,28 @@ export const AdminDashboardPage = () => {
   const [scanResult, setScanResult] = useState('')
   const [loading, setLoading] = useState(true)
   const [manualCheckInGuest, setManualCheckInGuest] = useState(null)
+  const [expandedGuests, setExpandedGuests] = useState(new Set())
+  const [page, setPage] = useState(1)
+  const [pageSize] = useState(25)
+  const [totalGuests, setTotalGuests] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
+  const deferredSearch = useDeferredValue(search)
 
   const refreshGuests = useCallback(async () => {
     setLoading(true)
-    const records = await fetchGuests({
+    const response = await fetchGuests({
       attendanceStatus: filters.status || undefined,
       checkedIn: filters.checkedIn === '' ? undefined : filters.checkedIn === 'yes',
+      search: deferredSearch.trim() || undefined,
+      page,
+      pageSize,
     })
-    setGuests(records)
+    setGuests(response.guests)
+    setTotalGuests(response.total)
+    setTotalPages(response.totalPages)
     setLoading(false)
-    return records
-  }, [filters.checkedIn, filters.status])
+    return response.guests
+  }, [deferredSearch, filters.checkedIn, filters.status, page, pageSize])
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -49,15 +119,22 @@ export const AdminDashboardPage = () => {
     })
   }, [refreshGuests])
 
+  useEffect(() => {
+    setPage(1)
+  }, [filters.checkedIn, filters.status, deferredSearch])
+
   const visibleGuests = useMemo(() => {
-    if (!search.trim()) return guests
-    const needle = normalize(search)
-    return guests.filter((guest) => {
-      return [guest.fullName, guest.phone, guest.email].some((value) =>
-        normalize(value).includes(needle),
-      )
-    })
-  }, [guests, search])
+    return guests
+  }, [guests])
+
+  const guestsByInvitedSide = useMemo(() => {
+    return visibleGuests.reduce((acc, guest) => {
+      const side = guest.invitedSide === 'groom' ? 'groom' : 'bride'
+      if (!acc[side]) acc[side] = []
+      acc[side].push(guest)
+      return acc
+    }, {})
+  }, [visibleGuests])
 
   const stats = useMemo(() => {
     const attending = guests.filter((guest) => guest.attendanceStatus === 'Attending').length
@@ -140,12 +217,13 @@ export const AdminDashboardPage = () => {
     const tableTopStart = 36
 
     const columns = [
-      { key: 'present', label: 'Present', width: 18 },
-      { key: 'checked', label: 'Checked In', width: 24 },
-      { key: 'name', label: 'Guest Name', width: 45 },
-      { key: 'status', label: 'Status', width: 24 },
-      { key: 'party', label: 'Party', width: 16 },
-      { key: 'accompanying', label: 'Accompanying Guests', width: 58 },
+      { key: 'present', label: 'Present', width: 16 },
+      { key: 'checked', label: 'Checked In', width: 20 },
+      { key: 'name', label: 'Guest Name', width: 40 },
+      { key: 'side', label: 'Invitation Side', width: 30 },
+      { key: 'status', label: 'Status', width: 20 },
+      { key: 'party', label: 'Party', width: 14 },
+      { key: 'accompanying', label: 'Accompanying Guests', width: 42 },
     ]
 
     const drawCheckbox = (x, y, checked = false) => {
@@ -168,6 +246,8 @@ export const AdminDashboardPage = () => {
         `Primary RSVPs: ${guests.length}`,
         `Accompanying Guests: ${stats.accompanyingGuests}`,
         `Total Invited People: ${stats.invitedPeople}`,
+        `Groom's Side: ${guests.filter((guest) => guest.invitedSide === 'groom').length}`,
+        `Bride's Side: ${guests.filter((guest) => guest.invitedSide === 'bride').length}`,
       ].join('  |  ')
       doc.text(summary, margin, 28)
 
@@ -198,10 +278,22 @@ export const AdminDashboardPage = () => {
         ? guest.guestNames.filter(Boolean).join(', ')
         : ''
 
-      const nameLines = getWrapped(guest.fullName, columns[2].width)
-      const statusLines = getWrapped(guest.attendanceStatus, columns[3].width)
-      const accompanyingLines = getWrapped(accompanyingNames, columns[5].width)
-      const lineCount = Math.max(nameLines.length, statusLines.length, accompanyingLines.length, 1)
+      const guestNameColumn = columns.find((column) => column.key === 'name')
+      const sideColumn = columns.find((column) => column.key === 'side')
+      const statusColumn = columns.find((column) => column.key === 'status')
+      const accompanyingColumn = columns.find((column) => column.key === 'accompanying')
+
+      const nameLines = getWrapped(guest.fullName, guestNameColumn.width)
+      const sideLines = getWrapped(formatInvitedSideLabel(guest.invitedSide), sideColumn.width)
+      const statusLines = getWrapped(guest.attendanceStatus, statusColumn.width)
+      const accompanyingLines = getWrapped(accompanyingNames, accompanyingColumn.width)
+      const lineCount = Math.max(
+        nameLines.length,
+        sideLines.length,
+        statusLines.length,
+        accompanyingLines.length,
+        1,
+      )
       const rowHeight = Math.max(baseRowHeight, lineCount * lineHeight + 3)
 
       if (y + rowHeight > pageHeight - margin) {
@@ -218,13 +310,15 @@ export const AdminDashboardPage = () => {
         if (column.key === 'present') {
           drawCheckbox(x + 6.5, y + 2)
         } else if (column.key === 'checked') {
-          drawCheckbox(x + 9.5, y + 2, Boolean(guest.checkedIn))
+          drawCheckbox(x + 8, y + 2, Boolean(guest.checkedIn))
         } else if (column.key === 'name') {
           doc.text(nameLines, x + 1, y + 5)
+        } else if (column.key === 'side') {
+          doc.text(sideLines, x + 1, y + 5)
         } else if (column.key === 'status') {
           doc.text(statusLines, x + 1, y + 5)
         } else if (column.key === 'party') {
-          doc.text(String((Number(guest.guestCount || 0) + 1)), x + 6, y + 5.5)
+          doc.text(String((Number(guest.guestCount || 0) + 1)), x + 5.5, y + 5.5)
         } else if (column.key === 'accompanying') {
           doc.text(accompanyingLines, x + 1, y + 5)
         }
@@ -237,15 +331,163 @@ export const AdminDashboardPage = () => {
     doc.save('wedding-guest-list.pdf')
   }
 
+  const [thankYouLinks, setThankYouLinks] = useState([])
+  const [thankYouStatus, setThankYouStatus] = useState('')
+  const [thankYouLoading, setThankYouLoading] = useState(false)
+
   const triggerThankYou = async () => {
-    await sendThankYouBatches()
+    setThankYouLoading(true)
+    setThankYouStatus('')
+    try {
+      const response = await sendThankYouBatches()
+      setThankYouLinks(response.thankYouLinks || [])
+      setThankYouStatus(response.message || 'Thank you links generated. Open wa.me links to send.')
+    } catch (error) {
+      setThankYouStatus(`Error: ${error.message}`)
+    } finally {
+      setThankYouLoading(false)
+    }
   }
+
+  const openWaMeLink = (waMeLink) => {
+    if (waMeLink) {
+      window.open(waMeLink, '_blank', 'noopener,noreferrer')
+    }
+  }
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text).then(() => {
+      alert('Copied to clipboard!')
+    })
+  }
+
+  const markAllThankYouSent = async () => {
+    if (thankYouLinks.length === 0) return
+    setThankYouLoading(true)
+    try {
+      const guestIds = thankYouLinks.map((link) => link.guestId)
+      await markThankYouSent(guestIds)
+      setThankYouStatus('All thank you messages marked as sent!')
+      setThankYouLinks([])
+      await refreshGuests()
+    } catch (error) {
+      setThankYouStatus(`Error marking sent: ${error.message}`)
+    } finally {
+      setThankYouLoading(false)
+    }
+  }
+
+  const toggleExpanded = (guestId) => {
+    setExpandedGuests((prev) => {
+      const next = new Set(prev)
+      if (next.has(guestId)) next.delete(guestId)
+      else next.add(guestId)
+      return next
+    })
+  }
+
+  const GuestTableSection = ({ title, subtitle, guestsForSection, gradientClass }) => (
+    <div className="rounded-xl border border-rosewood/15">
+      <div className={`bg-gradient-to-r ${gradientClass} px-4 py-3`}>
+        <h3 className="font-heading text-xl text-charcoal">{title}</h3>
+        <p className="text-sm text-charcoal/70">{subtitle}</p>
+      </div>
+      <div className="divide-y divide-rosewood/10">
+        {loading && (
+          <div className="px-4 py-2 text-sm text-charcoal/70">Loading guests...</div>
+        )}
+        {!loading &&
+          guestsForSection.map((guest) => (
+            <GuestRow
+              key={guest.guestId}
+              guest={guest}
+              isExpanded={expandedGuests.has(guest.guestId)}
+              onToggle={() => toggleExpanded(guest.guestId)}
+            />
+          ))}
+      </div>
+    </div>
+  )
+
+  const StatCard = ({ icon, label, value, color }) => (
+    <div className={`rounded-xl border border-rosewood/15 bg-gradient-to-br ${color} p-4`}>
+      <div className="flex items-center gap-3">
+        <div className="text-2xl">{icon}</div>
+        <div>
+          <p className="text-xs uppercase tracking-wider text-rosewood/70">{label}</p>
+          <p className="text-2xl font-bold text-charcoal">{value}</p>
+        </div>
+      </div>
+    </div>
+  )
+
+  const GuestRow = ({ guest, isExpanded, onToggle }) => (
+    <div key={guest.guestId} className={`border-b border-rosewood/10 ${guest.checkedIn ? 'bg-emerald-50' : ''}`}>
+      {/* Main guest row */}
+      <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between md:gap-0">
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block h-2 w-2 rounded-full ${guest.checkedIn ? 'bg-emerald-500' : 'bg-amber-300'}`}></span>
+            <p className="font-semibold text-charcoal">{guest.fullName}</p>
+          </div>
+          <p className="mt-1 text-xs text-charcoal/60">{guest.email || guest.phone || 'N/A'}</p>
+        </div>
+
+        <div className="flex items-center gap-4 text-sm md:gap-6">
+          <div className="text-center">
+            <p className="text-xs uppercase tracking-wider text-rosewood/70">Status</p>
+            <p className="font-semibold text-charcoal">{guest.attendanceStatus}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs uppercase tracking-wider text-rosewood/70">Party</p>
+            <p className="font-semibold text-charcoal">{Number(guest.guestCount || 0) + 1}</p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => handleResend(guest.guestId)}
+            className="rounded-full border border-rosewood/30 px-3 py-1.5 text-xs text-rosewood hover:bg-rosewood/5"
+          >
+            WhatsApp
+          </button>
+          <button
+            onClick={() => handleManualCheckIn(guest)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              guest.checkedIn
+                ? 'bg-emerald-500 text-white cursor-default'
+                : 'bg-slategreen text-white hover:bg-slategreen/90'
+            }`}
+            disabled={guest.checkedIn}
+          >
+            {guest.checkedIn ? '✓ Checked In' : 'Check In'}
+          </button>
+          {Number(guest.guestCount || 0) > 0 && (
+            <button
+              onClick={() => onToggle()}
+              className="rounded-full border border-slategreen/40 px-3 py-1.5 text-xs text-slategreen hover:bg-slategreen/5"
+            >
+              {isExpanded ? '−' : '+'} Accompanying Guests ({Number(guest.guestCount || 0)})
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Accompanying guests sub-table */}
+      {isExpanded && Number(guest.guestCount || 0) > 0 && (
+        <div className="border-t border-rosewood/5 bg-cream/30 px-4 py-3">
+          <AccompanyingGuestList guest={guest} onAdjust={(delta) => handleAccompanyingCheckIn(guest, delta)} />
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <SignedIn>
       <div className="min-h-screen bg-cream px-4 py-8">
-        <div className="mx-auto max-w-6xl rounded-2xl border border-rosewood/15 bg-white p-6 shadow-soft">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="mx-auto max-w-7xl rounded-2xl border border-rosewood/15 bg-white p-6 shadow-soft">
+          {/* Header */}
+          <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
             <div>
               <p className="text-xs uppercase tracking-widest text-rosewood">Admin Dashboard</p>
               <h1 className="font-heading text-4xl text-charcoal">Wedding Control Room</h1>
@@ -253,33 +495,56 @@ export const AdminDashboardPage = () => {
             <UserButton />
           </div>
 
-          <div className="mt-6 flex flex-wrap gap-2">
+          {/* Tab Navigation - Segmented Control */}
+          <div className="mt-6 flex gap-2 border-b border-rosewood/10 p-1">
             {['overview', 'guests', 'scanner', 'export'].map((tab) => (
               <button
                 key={tab}
-                className={tabStyles(tab === activeTab)}
                 onClick={() => setActiveTab(tab)}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                  tab === activeTab
+                    ? 'bg-rosewood text-cream'
+                    : 'text-charcoal/70 hover:text-charcoal'
+                }`}
               >
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {tab === 'overview' && '📊'}
+                {tab === 'guests' && '👥'}
+                {tab === 'scanner' && '📱'}
+                {tab === 'export' && '📄'}
+                <span className="ml-2 hidden sm:inline">{tab.charAt(0).toUpperCase() + tab.slice(1)}</span>
               </button>
             ))}
           </div>
 
+          {/* Overview Tab */}
           {activeTab === 'overview' && (
-            <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
-              {Object.entries(stats).map(([label, value]) => (
-                <div key={label} className="rounded-xl border border-rosewood/15 bg-cream p-4">
-                  <p className="text-xs uppercase tracking-wider text-rosewood">{label}</p>
-                  <p className="mt-1 text-3xl font-bold text-charcoal">{value}</p>
+            <div className="mt-8 space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold text-charcoal">Event Summary</h2>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <StatCard icon="🎯" label="Total Guests" value={stats.total} color="from-blue-50 to-blue-100" />
+                  <StatCard icon="✓" label="Attending" value={stats.attending} color="from-emerald-50 to-emerald-100" />
+                  <StatCard icon="❓" label="Maybe" value={stats.maybe} color="from-amber-50 to-amber-100" />
+                  <StatCard icon="✕" label="Not Attending" value={stats.notAttending} color="from-slate-50 to-slate-100" />
                 </div>
-              ))}
+              </div>
+
+              <div>
+                <h2 className="text-lg font-semibold text-charcoal">Check-in Status</h2>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <StatCard icon="✅" label="Checked In" value={stats.checkedIn} color="from-emerald-50 to-emerald-100" />
+                  <StatCard icon="👫" label="Total People" value={stats.invitedPeople} color="from-purple-50 to-purple-100" />
+                  <StatCard icon="👥" label="Accompanying" value={stats.accompanyingGuests} color="from-pink-50 to-pink-100" />
+                </div>
+              </div>
             </div>
           )}
 
+          {/* Guests Tab */}
           {activeTab === 'guests' && (
             <div className="mt-6 space-y-4">
               {actionMessage && (
-                <div className="rounded-lg border border-rosewood/20 bg-cream px-3 py-2 text-sm text-charcoal">
+                <div className="rounded-lg border border-rosewood/20 bg-cream px-4 py-3 text-sm text-charcoal">
                   <p>{actionMessage}</p>
                   {waMeLink && (
                     <a
@@ -294,9 +559,9 @@ export const AdminDashboardPage = () => {
                 </div>
               )}
 
-              <div className="grid gap-3 sm:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <input
-                  className="rounded-lg border border-rosewood/20 px-3 py-2 text-sm sm:col-span-2"
+                  className="rounded-lg border border-rosewood/20 px-3 py-2 text-sm lg:col-span-2"
                   placeholder="Search name / phone / email"
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
@@ -326,76 +591,69 @@ export const AdminDashboardPage = () => {
                 </select>
               </div>
 
-              <div className="overflow-x-auto rounded-xl border border-rosewood/15">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="bg-cream text-charcoal">
-                    <tr>
-                      <th className="px-3 py-2">Guest Name</th>
-                      <th className="px-3 py-2">Status</th>
-                      <th className="px-3 py-2">Total Party</th>
-                      <th className="px-3 py-2">Plus Ones</th>
-                      <th className="px-3 py-2">Accompanying Check-in</th>
-                      <th className="px-3 py-2">Contact</th>
-                      <th className="px-3 py-2">Checked-in</th>
-                      <th className="px-3 py-2">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loading && (
-                      <tr>
-                        <td className="px-3 py-2" colSpan={8}>
-                          Loading guests...
-                        </td>
-                      </tr>
-                    )}
-                    {!loading &&
-                      visibleGuests.map((guest) => (
-                        <tr
-                          key={guest.guestId}
-                          className={`border-t border-rosewood/10 ${guest.checkedIn ? 'bg-emerald-100/65' : ''}`}
-                        >
-                          <td className="px-3 py-2">{guest.fullName}</td>
-                          <td className="px-3 py-2">{guest.attendanceStatus}</td>
-                          <td className="px-3 py-2">{Number(guest.guestCount || 0) + 1}</td>
-                          <td className="px-3 py-2">{guest.guestNames?.filter(Boolean).join(', ') || '-'}</td>
-                          <td className="px-3 py-2">
-                            {Number(guest.guestCount || 0) > 0
-                              ? `${Number(guest.accompanyingCheckedIn || 0)} / ${Number(guest.guestCount || 0)}`
-                              : '-'}
-                          </td>
-                          <td className="px-3 py-2">{guest.phone || guest.email || 'N/A'}</td>
-                          <td className="px-3 py-2">{guest.checkedIn ? 'Yes' : 'No'}</td>
-                          <td className="flex gap-2 px-3 py-2">
-                            <button
-                              onClick={() => handleResend(guest.guestId)}
-                              className="rounded-full border border-rosewood/30 px-3 py-1 text-xs text-rosewood"
-                            >
-                              Open WhatsApp
-                            </button>
-                            <button
-                              onClick={() => handleManualCheckIn(guest)}
-                              className="rounded-full bg-slategreen px-3 py-1 text-xs text-white"
-                              disabled={guest.checkedIn}
-                            >
-                              Manual check-in
-                            </button>
-                            {Number(guest.guestCount || 0) > 0 && (
-                              <button
-                                onClick={() => setManualCheckInGuest(guest)}
-                                className="rounded-full border border-slategreen/40 px-3 py-1 text-xs text-slategreen"
-                              >
-                                Accompanying
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+              <div className="flex flex-col gap-3 rounded-lg border border-rosewood/10 bg-cream/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-charcoal/70">
+                  Showing page {page} of {totalPages || 1} · {totalGuests} guest{totalGuests === 1 ? '' : 's'} total
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage((current) => Math.max(1, current - 1))}
+                    disabled={page <= 1 || loading}
+                    className="rounded-full border border-charcoal/20 px-3 py-1.5 text-xs font-semibold text-charcoal hover:bg-charcoal/5 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    onClick={() => setPage((current) => Math.min(totalPages || 1, current + 1))}
+                    disabled={page >= (totalPages || 1) || loading}
+                    className="rounded-full bg-slategreen px-3 py-1.5 text-xs font-semibold text-white hover:bg-slategreen/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
+
+              {/* Main Guest Table (Bride + Groom) */}
+              {visibleGuests.length > 0 && (
+                <div className="mt-6">
+                  <GuestTableSection
+                    title="📋 Main Guest List"
+                    subtitle={`${visibleGuests.length} guests on this page (Bride + Groom)`}
+                    guestsForSection={visibleGuests}
+                    gradientClass="from-amber-50 to-rose-100"
+                  />
+                </div>
+              )}
+
+              {/* Groom Guest Table */}
+              {(guestsByInvitedSide.groom?.length > 0) && (
+                <GuestTableSection
+                  title="👨 Groom Guest List"
+                  subtitle={`${guestsByInvitedSide.groom.length} guests`}
+                  guestsForSection={guestsByInvitedSide.groom}
+                  gradientClass="from-blue-50 to-blue-100"
+                />
+              )}
+
+              {/* Bride Guest Table */}
+              {(guestsByInvitedSide.bride?.length > 0) && (
+                <GuestTableSection
+                  title="👩 Bride Guest List"
+                  subtitle={`${guestsByInvitedSide.bride.length} guests`}
+                  guestsForSection={guestsByInvitedSide.bride}
+                  gradientClass="from-pink-50 to-pink-100"
+                />
+              )}
+
+              {!loading && Object.values(guestsByInvitedSide).flat().length === 0 && (
+                <div className="rounded-lg border border-rosewood/15 bg-cream px-4 py-8 text-center text-charcoal/70">
+                  No guests found. Try adjusting your filters.
+                </div>
+              )}
             </div>
           )}
 
+          {/* Scanner Tab */}
           {activeTab === 'scanner' && (
             <div className="mt-6 space-y-4">
               <div className="overflow-hidden rounded-xl border border-rosewood/20">
@@ -407,37 +665,27 @@ export const AdminDashboardPage = () => {
             </div>
           )}
 
+          {/* Manual Check-in Modal */}
           {manualCheckInGuest && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-              <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-soft">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-soft">
                 <p className="text-xs uppercase tracking-wider text-rosewood">Manual check-in</p>
-                <h3 className="mt-1 font-heading text-3xl text-charcoal">{manualCheckInGuest.fullName}</h3>
-                <p className="mt-2 text-sm text-charcoal/80">
+                <h3 className="mt-2 font-heading text-3xl text-charcoal">{manualCheckInGuest.fullName}</h3>
+                <p className="mt-3 text-sm text-charcoal/80">
                   Primary guest is checked in. Update accompanying guests as they arrive.
                 </p>
 
-                <div className="mt-4 rounded-lg border border-rosewood/15 bg-cream p-3">
-                  <p className="text-sm text-charcoal">
-                    Accompanying checked in: <span className="font-semibold">{Number(manualCheckInGuest.accompanyingCheckedIn || 0)}</span> / {Number(manualCheckInGuest.guestCount || 0)}
-                  </p>
+                <div className="mt-5 rounded-lg border border-rosewood/15 bg-cream p-4">
+                  <AccompanyingGuestList
+                    guest={manualCheckInGuest}
+                    onAdjust={(delta) => handleAccompanyingCheckIn(manualCheckInGuest, delta)}
+                  />
                 </div>
 
-                <div className="mt-4 flex gap-2">
-                  <button
-                    onClick={() => handleAccompanyingCheckIn(manualCheckInGuest, -1)}
-                    className="rounded-full border border-rosewood/30 px-4 py-2 text-sm text-rosewood"
-                  >
-                    -1
-                  </button>
-                  <button
-                    onClick={() => handleAccompanyingCheckIn(manualCheckInGuest, 1)}
-                    className="rounded-full bg-slategreen px-4 py-2 text-sm text-white"
-                  >
-                    +1 arrived
-                  </button>
+                <div className="mt-5 flex justify-end">
                   <button
                     onClick={() => setManualCheckInGuest(null)}
-                    className="ml-auto rounded-full border border-charcoal/20 px-4 py-2 text-sm text-charcoal"
+                    className="rounded-full border border-charcoal/20 px-4 py-2 text-sm text-charcoal hover:bg-charcoal/5"
                   >
                     Close
                   </button>
@@ -446,20 +694,91 @@ export const AdminDashboardPage = () => {
             </div>
           )}
 
+          {/* Export Tab */}
           {activeTab === 'export' && (
             <div className="mt-6 space-y-4">
-              <button
-                onClick={exportPdf}
-                className="rounded-full bg-rosewood px-4 py-2 text-sm font-semibold text-cream"
-              >
-                Export Guest PDF
-              </button>
-              <button
-                onClick={triggerThankYou}
-                className="ml-2 rounded-full border border-rosewood/30 px-4 py-2 text-sm font-semibold text-rosewood"
-              >
-                Send Thank You (Batch 100)
-              </button>
+              <div className="rounded-xl border border-rosewood/15 bg-cream p-6">
+                <h3 className="font-semibold text-charcoal">Export Options</h3>
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                  <button
+                    onClick={exportPdf}
+                    className="flex-1 rounded-full bg-rosewood px-4 py-2.5 text-sm font-semibold text-cream hover:bg-rosewood/90"
+                  >
+                    📄 Export Guest PDF
+                  </button>
+                  <button
+                    onClick={triggerThankYou}
+                    disabled={thankYouLoading}
+                    className="flex-1 rounded-full border border-rosewood/30 px-4 py-2.5 text-sm font-semibold text-rosewood hover:bg-rosewood/5 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {thankYouLoading ? 'Generating...' : '✉️ Generate Thank You Messages'}
+                  </button>
+                </div>
+              </div>
+
+              {thankYouStatus && (
+                <div className="rounded-lg border border-rosewood/20 bg-white px-4 py-3">
+                  <p className="text-sm text-charcoal">{thankYouStatus}</p>
+                </div>
+              )}
+
+              {thankYouLinks.length > 0 && (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-rosewood/15 bg-white p-6">
+                    <div className="mb-4 flex items-center justify-between">
+                      <h4 className="font-semibold text-charcoal">
+                        📞 {thankYouLinks.length} Thank You Message(s) Ready
+                      </h4>
+                      <button
+                        onClick={markAllThankYouSent}
+                        disabled={thankYouLoading}
+                        className="rounded-full bg-slategreen px-3 py-1.5 text-xs font-semibold text-white hover:bg-slategreen/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Mark All Sent
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {thankYouLinks.map((link) => (
+                        <div
+                          key={link.guestId}
+                          className="flex flex-col gap-2 rounded-lg border border-rosewood/10 bg-cream/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="flex-1">
+                            <p className="font-semibold text-charcoal">{link.fullName}</p>
+                            <p className="text-xs text-charcoal/60">
+                              {link.hasPhone ? '📱 ' + link.phone : '📧 ' + (link.email || 'No contact')}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            {link.waMeLink && (
+                              <>
+                                <button
+                                  onClick={() => openWaMeLink(link.waMeLink)}
+                                  className="rounded-full border border-slategreen/40 px-3 py-1 text-xs text-slategreen hover:bg-slategreen/5"
+                                >
+                                  Open WhatsApp
+                                </button>
+                                <button
+                                  onClick={() => copyToClipboard(link.waMeLink)}
+                                  className="rounded-full border border-rosewood/30 px-3 py-1 text-xs text-rosewood hover:bg-rosewood/5"
+                                >
+                                  Copy Link
+                                </button>
+                              </>
+                            )}
+                            {!link.hasPhone && (
+                              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-700">
+                                No phone number
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
