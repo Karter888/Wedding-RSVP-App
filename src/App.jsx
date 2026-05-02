@@ -6,7 +6,7 @@ import { TicketPage } from './pages/TicketPage'
 import { AdminGuardedPage } from './pages/AdminDashboardPage'
 import { AdminSignInPage } from './pages/AdminSignInPage'
 import { NotFoundPage } from './pages/NotFoundPage'
-
+import { Analytics } from "@vercel/analytics/next"
 
 function App() {
   return (
