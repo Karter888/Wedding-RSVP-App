@@ -6,7 +6,7 @@ import { TicketPage } from './pages/TicketPage'
 import { AdminGuardedPage } from './pages/AdminDashboardPage'
 import { AdminSignInPage } from './pages/AdminSignInPage'
 import { NotFoundPage } from './pages/NotFoundPage'
-import { Analytics } from "@vercel/analytics/next"
+// Removed Next.js-specific Vercel Analytics import to keep Vite dev working
 
 function App() {
   return (

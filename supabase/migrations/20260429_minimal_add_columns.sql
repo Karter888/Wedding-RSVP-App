@@ -1,6 +1,9 @@
 -- Add only missing columns if they don't exist, without dropping/re-adding constraints
 alter table if exists public.guests
   add column if not exists invited_side text default 'groom';
+  alter table public.guests add column if not exists invite_token text;
+  alter table public.guests add column if not exists invite_used_at timestamptz;
+  alter table public.guests add column if not exists invite_expires_at timestamptz;
 
 alter table if exists public.guests
   add column if not exists accompanying_checked_in integer default 0;

@@ -1,13 +1,14 @@
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { SectionCard } from '../components/SectionCard'
 import { INVITE_SIDE_OPTIONS } from '../utils/constants'
 
 export const InviteSidePage = () => {
   const navigate = useNavigate()
+  const location = useLocation()
 
-  const selectSide = (side) => {
-    navigate(`/rsvp?side=${side}`)
-  }
+  const token = new URLSearchParams(location.search).get('token')
+
+  const buildLink = (side) => (token ? `/rsvp?side=${side}&token=${encodeURIComponent(token)}` : `/rsvp?side=${side}`)
 
   return (
     <div className="min-h-screen bg-cream px-4 py-10">
@@ -20,14 +21,14 @@ export const InviteSidePage = () => {
 
         <div className="mt-8 grid gap-4 sm:grid-cols-2">
           {INVITE_SIDE_OPTIONS.map((option) => (
-            <button
+            <Link
               key={option.value}
-              onClick={() => selectSide(option.value)}
+              to={buildLink(option.value)}
               className="rounded-2xl border border-rosewood/20 bg-white px-6 py-8 text-left transition hover:border-rosewood hover:shadow-soft"
             >
               <p className="text-xs uppercase tracking-[0.22em] text-rosewood">Invitation Side</p>
               <p className="mt-2 font-heading text-3xl text-charcoal">{option.label}</p>
-            </button>
+            </Link>
           ))}
         </div>
       </SectionCard>

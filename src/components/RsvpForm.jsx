@@ -29,6 +29,8 @@ export const RsvpForm = ({
       )),
     [onChange, values.guestNames],
   )
+  const urlParams = new URLSearchParams(window.location.search)
+  const inviteToken = urlParams.get('token')
 
   // Keep the input strictly in local form (9 digits after +260).
   const localPhone = values.phone
@@ -157,6 +159,9 @@ export const RsvpForm = ({
       >
         {isSubmitting ? 'Submitting RSVP...' : 'Submit RSVP'}
       </button>
+      {inviteToken && (
+        <input type="hidden" name="inviteToken" value={inviteToken} />
+      )}
     </form>
   )
 }

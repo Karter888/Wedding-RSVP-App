@@ -13,6 +13,9 @@ create table if not exists public.guests (
   token text not null,
   qr_code_data_url text not null,
   ticket_url text not null,
+  invite_token text,
+  invite_used_at timestamptz,
+  invite_expires_at timestamptz,
   checked_in boolean not null default false,
   checked_in_at timestamptz,
   message_status text not null default 'pending' check (message_status in ('sent', 'pending', 'failed')),
@@ -39,6 +42,7 @@ alter table public.guests add constraint guests_accompanying_checked_in_check ch
 create index if not exists guests_attendance_idx on public.guests (attendance_status);
 create index if not exists guests_checked_in_idx on public.guests (checked_in);
 create index if not exists guests_name_idx on public.guests (full_name);
+create index if not exists guests_invite_token_idx on public.guests (invite_token);
 
 create or replace function public.set_updated_at()
 returns trigger

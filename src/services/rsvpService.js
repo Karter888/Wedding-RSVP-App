@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 import { buildQrPayload, generateQrCodeWithRetry } from '../utils/qr'
 import { generateToken } from '../utils/token'
+import { invokeEdgeFunction } from './rsvpServiceInternal'
 
 const mapGuestRow = (row) => ({
   guestId: row.guest_id,
@@ -63,9 +64,11 @@ export const submitRsvp = async (formData) => {
     phone: normalisePhone(formData.phone),
     email: formData.email || null,
     token,
+    inviteToken: formData.inviteToken || null,
     qrCodeDataUrl,
     ticketUrl,
   })
+
 
   if (data?.error) {
     throw new Error(data.error)
@@ -116,18 +119,6 @@ export const updateCheckInStatus = async (guestId, checkedIn = true, accompanyin
 
 export const scanAndCheckIn = async (qrPayload) => {
   return invokeEdgeFunction('validate-and-check-in', { qrPayload })
-}
-
-const invokeEdgeFunction = async (functionName, payload) => {
-  const { data, error } = await supabase.functions.invoke(functionName, {
-    body: payload,
-  })
-
-  if (error) {
-    throw new Error(error.message)
-  }
-
-  return data
 }
 
 export const sendInvitationMessage = async ({ guestId }) => {

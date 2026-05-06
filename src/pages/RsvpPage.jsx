@@ -34,7 +34,21 @@ export const RsvpPage = () => {
   const failedPayload = readFailedForm()
 
   useEffect(() => {
+    // Support two flows: new invite links may include ?token and optionally ?side; legacy uses ?side only
+    const token = searchParams.get('token')
     const side = searchParams.get('side')
+
+    if (token) {
+      // If token present and a side was passed along, honour it so the guest doesn't have to reselect.
+      if (side === 'groom' || side === 'bride') {
+        setValues((prev) => ({ ...prev, invitedSide: side }))
+      } else {
+        // keep empty to allow user to choose on the Invite Side flow
+        setValues((prev) => ({ ...prev, invitedSide: '' }))
+      }
+      return
+    }
+
     if (side !== 'groom' && side !== 'bride') {
       navigate('/rsvp/side', { replace: true })
       return

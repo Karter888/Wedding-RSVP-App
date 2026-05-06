@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import { CountdownTimer } from '../components/CountdownTimer'
 import { PublicNavbar } from '../components/PublicNavbar'
 import { SectionCard } from '../components/SectionCard'
@@ -6,6 +7,16 @@ import { EVENT_DETAILS } from '../utils/constants'
 import heroImg from '../assets/photo2-515.jpg'
 
 export const InvitationPage = () => {
+  const location = useLocation()
+  const [inviteToken, setInviteToken] = useState(null)
+
+  // Read token from url but do not auto-redirect; instead preserve it for the Register link.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const token = params.get('token')
+    if (token) setInviteToken(token)
+  }, [location.search])
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fdf7ef_0%,#f8f2ea_45%,#efe2d5_100%)]">
       <PublicNavbar />
@@ -31,7 +42,7 @@ export const InvitationPage = () => {
               joyfully invite you to celebrate their wedding ceremony and reception.
             </p>
             <Link
-              to="/rsvp/side"
+              to={inviteToken ? `/rsvp/side?token=${encodeURIComponent(inviteToken)}` : '/rsvp/side'}
               className="mt-6 inline-flex w-fit rounded-full bg-rosewood px-6 py-3 text-sm font-semibold text-cream hover:bg-rosewood/90"
             >
               Register Now

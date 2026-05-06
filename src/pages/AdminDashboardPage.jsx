@@ -14,6 +14,7 @@ import {
   markThankYouSent,
   updateCheckInStatus,
 } from '../services/rsvpService'
+import inviteService from '../services/inviteService'
 
 const formatInvitedSideLabel = (side) => (side === 'groom' ? "Groom's Side" : "Bride's Side")
 
@@ -334,6 +335,12 @@ export const AdminDashboardPage = () => {
   const [thankYouLinks, setThankYouLinks] = useState([])
   const [thankYouStatus, setThankYouStatus] = useState('')
   const [thankYouLoading, setThankYouLoading] = useState(false)
+  const [showInviteModal, setShowInviteModal] = useState(false)
+  const [inviteForm, setInviteForm] = useState({ fullName: '', invitedSide: 'groom', phone: '', email: '', expiresInMinutes: 1440 })
+  const [inviteGenerating, setInviteGenerating] = useState(false)
+  const [inviteStatus, setInviteStatus] = useState('')
+  const [lastInviteLink, setLastInviteLink] = useState('')
+  const [selectedTable, setSelectedTable] = useState('all')
 
   const triggerThankYou = async () => {
     setThankYouLoading(true)
@@ -376,6 +383,32 @@ export const AdminDashboardPage = () => {
       setThankYouLoading(false)
     }
   }
+
+  const createInvite = async () => {
+    setInviteGenerating(true)
+    setInviteStatus('')
+    try {
+      const { inviteToken } = await inviteService.createInvite({ expiresInMinutes: inviteForm.expiresInMinutes })
+      const link = `${window.location.origin}/?token=${inviteToken}`
+      await navigator.clipboard.writeText(link)
+      setLastInviteLink(link)
+      setInviteStatus('Invite link copied to clipboard!')
+      setShowInviteModal(false)
+      setInviteForm({ fullName: '', invitedSide: 'groom', phone: '', email: '', expiresInMinutes: 1440 })
+      await refreshGuests()
+    } catch (error) {
+      setInviteStatus(`Failed: ${error.message}`)
+    } finally {
+      setInviteGenerating(false)
+    }
+  }
+
+  // Auto-clear inviteStatus after a short delay
+  useEffect(() => {
+    if (!inviteStatus) return
+    const id = setTimeout(() => setInviteStatus(''), 3500)
+    return () => clearTimeout(id)
+  }, [inviteStatus])
 
   const toggleExpanded = (guestId) => {
     setExpandedGuests((prev) => {
@@ -430,6 +463,8 @@ export const AdminDashboardPage = () => {
             <span className={`inline-block h-2 w-2 rounded-full ${guest.checkedIn ? 'bg-emerald-500' : 'bg-amber-300'}`}></span>
             <p className="font-semibold text-charcoal">{guest.fullName}</p>
           </div>
+
+          
           <p className="mt-1 text-xs text-charcoal/60">{guest.email || guest.phone || 'N/A'}</p>
         </div>
 
@@ -444,7 +479,7 @@ export const AdminDashboardPage = () => {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2">
           <button
             onClick={() => handleResend(guest.guestId)}
             className="rounded-full border border-rosewood/30 px-3 py-1.5 text-xs text-rosewood hover:bg-rosewood/5"
@@ -492,7 +527,15 @@ export const AdminDashboardPage = () => {
               <p className="text-xs uppercase tracking-widest text-rosewood">Admin Dashboard</p>
               <h1 className="font-heading text-4xl text-charcoal">Wedding Control Room</h1>
             </div>
-            <UserButton />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowInviteModal(true)}
+                className="rounded-full border border-rosewood/30 px-4 py-2 text-sm font-semibold text-rosewood hover:bg-rosewood/5"
+              >
+                Generate Invite Link
+              </button>
+              <UserButton />
+            </div>
           </div>
 
           {/* Tab Navigation - Segmented Control */}
@@ -613,43 +656,82 @@ export const AdminDashboardPage = () => {
                 </div>
               </div>
 
-              {/* Main Guest Table (Bride + Groom) */}
-              {visibleGuests.length > 0 && (
-                <div className="mt-6">
-                  <GuestTableSection
-                    title="📋 Main Guest List"
-                    subtitle={`${visibleGuests.length} guests on this page (Bride + Groom)`}
-                    guestsForSection={visibleGuests}
-                    gradientClass="from-amber-50 to-rose-100"
-                  />
+              {/* Guest Table selector */}
+              <div className="mt-6">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelectedTable('all')}
+                    className={`rounded-full px-3 py-1.5 text-sm font-semibold ${selectedTable === 'all' ? 'bg-rosewood text-cream' : 'border border-rosewood/20 text-rosewood hover:bg-rosewood/5'}`}
+                  >
+                    All ({visibleGuests.length})
+                  </button>
+                  <button
+                    onClick={() => setSelectedTable('groom')}
+                    className={`rounded-full px-3 py-1.5 text-sm font-semibold ${selectedTable === 'groom' ? 'bg-blue-600 text-cream' : 'border border-blue-100 text-blue-700 hover:bg-blue-50'}`}
+                  >
+                    Groom ({guestsByInvitedSide.groom?.length || 0})
+                  </button>
+                  <button
+                    onClick={() => setSelectedTable('bride')}
+                    className={`rounded-full px-3 py-1.5 text-sm font-semibold ${selectedTable === 'bride' ? 'bg-pink-600 text-cream' : 'border border-pink-100 text-pink-700 hover:bg-pink-50'}`}
+                  >
+                    Bride ({guestsByInvitedSide.bride?.length || 0})
+                  </button>
                 </div>
-              )}
 
-              {/* Groom Guest Table */}
-              {(guestsByInvitedSide.groom?.length > 0) && (
-                <GuestTableSection
-                  title="👨 Groom Guest List"
-                  subtitle={`${guestsByInvitedSide.groom.length} guests`}
-                  guestsForSection={guestsByInvitedSide.groom}
-                  gradientClass="from-blue-50 to-blue-100"
-                />
-              )}
+                <div className="mt-4">
+                  {selectedTable === 'all' && (
+                    visibleGuests.length > 0 ? (
+                      <GuestTableSection
+                        title="📋 Main Guest List"
+                        subtitle={`${visibleGuests.length} guests on this page (Bride + Groom)`}
+                        guestsForSection={visibleGuests}
+                        gradientClass="from-amber-50 to-rose-100"
+                      />
+                    ) : (
+                      !loading && (
+                        <div className="rounded-lg border border-rosewood/15 bg-cream px-4 py-8 text-center text-charcoal/70">
+                          No guests found. Try adjusting your filters.
+                        </div>
+                      )
+                    )
+                  )}
 
-              {/* Bride Guest Table */}
-              {(guestsByInvitedSide.bride?.length > 0) && (
-                <GuestTableSection
-                  title="👩 Bride Guest List"
-                  subtitle={`${guestsByInvitedSide.bride.length} guests`}
-                  guestsForSection={guestsByInvitedSide.bride}
-                  gradientClass="from-pink-50 to-pink-100"
-                />
-              )}
+                  {selectedTable === 'groom' && (
+                    guestsByInvitedSide.groom?.length > 0 ? (
+                      <GuestTableSection
+                        title="👨 Groom Guest List"
+                        subtitle={`${guestsByInvitedSide.groom.length} guests`}
+                        guestsForSection={guestsByInvitedSide.groom}
+                        gradientClass="from-blue-50 to-blue-100"
+                      />
+                    ) : (
+                      !loading && (
+                        <div className="rounded-lg border border-blue-100 bg-white px-4 py-8 text-center text-blue-700/80">
+                          No groom guests found.
+                        </div>
+                      )
+                    )
+                  )}
 
-              {!loading && Object.values(guestsByInvitedSide).flat().length === 0 && (
-                <div className="rounded-lg border border-rosewood/15 bg-cream px-4 py-8 text-center text-charcoal/70">
-                  No guests found. Try adjusting your filters.
+                  {selectedTable === 'bride' && (
+                    guestsByInvitedSide.bride?.length > 0 ? (
+                      <GuestTableSection
+                        title="👩 Bride Guest List"
+                        subtitle={`${guestsByInvitedSide.bride.length} guests`}
+                        guestsForSection={guestsByInvitedSide.bride}
+                        gradientClass="from-pink-50 to-pink-100"
+                      />
+                    ) : (
+                      !loading && (
+                        <div className="rounded-lg border border-pink-100 bg-white px-4 py-8 text-center text-pink-700/80">
+                          No bride guests found.
+                        </div>
+                      )
+                    )
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           )}
 
@@ -691,6 +773,77 @@ export const AdminDashboardPage = () => {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Invite Modal */}
+          {showInviteModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-soft">
+                <p className="text-xs uppercase tracking-wider text-rosewood">Generate Invite</p>
+                <h3 className="mt-2 font-heading text-3xl text-charcoal">Create Invite Link</h3>
+                <p className="mt-3 text-sm text-charcoal/80">Generate a single-use invite link that lands on the invitation page. Set only the expiry timer.</p>
+
+                <div className="mt-5 space-y-3">
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Expires (minutes)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={inviteForm.expiresInMinutes}
+                      onChange={(e) => setInviteForm((p) => ({ ...p, expiresInMinutes: Number(e.target.value) }))}
+                      className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm"
+                    />
+                    <p className="text-xs text-charcoal/50 mt-1">Link will land on the public invitation page; invite token is attached in the URL.</p>
+                  </div>
+
+                  {inviteStatus && (
+                    <div className="rounded-lg border border-rosewood/20 bg-cream px-3 py-2 text-sm">
+                      {inviteStatus}
+                    </div>
+                  )}
+
+                    <div className="mt-4 flex justify-end gap-2">
+                    <button
+                      onClick={() => setShowInviteModal(false)}
+                      className="rounded-full border border-charcoal/20 px-4 py-2 text-sm text-charcoal hover:bg-charcoal/5"
+                    >
+                      Close
+                    </button>
+                    <button
+                      onClick={createInvite}
+                      disabled={inviteGenerating}
+                      className="rounded-full bg-rosewood px-4 py-2 text-sm font-semibold text-cream hover:bg-rosewood/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {inviteGenerating ? 'Generating...' : 'Generate & Copy Link'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Copy Notice / Toast */}
+          {inviteStatus && (
+            <div className="fixed right-6 top-6 z-50 flex items-center gap-3 rounded-lg border border-rosewood/20 bg-white px-4 py-2 shadow">
+              <p className="text-sm text-charcoal">{inviteStatus}</p>
+              {lastInviteLink && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => window.open(lastInviteLink, '_blank', 'noopener,noreferrer')}
+                    className="rounded-full border border-rosewood/30 px-2 py-1 text-xs text-rosewood hover:bg-rosewood/5"
+                  >
+                    Open
+                  </button>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(lastInviteLink)}
+                    className="rounded-full border border-rosewood/30 px-2 py-1 text-xs text-rosewood hover:bg-rosewood/5"
+                  >
+                    Copy
+                  </button>
+                </div>
+              )}
+              <button onClick={() => setInviteStatus('')} className="ml-2 text-xs text-charcoal/60">×</button>
             </div>
           )}
 

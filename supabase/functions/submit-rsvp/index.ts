@@ -58,11 +58,42 @@ Deno.serve(async (request: Request) => {
       ticketUrl,
     } = payload
 
-    if (!guestId || !fullName || !attendanceStatus || !token  || !invitedSide) {
-      return jsonResponse({ error: 'Missing required RSVP fields.' }, 400)
+    // Accept either a guestId (legacy/new) OR an inviteToken that maps to an existing guest row.
+    const inviteToken = (payload as any).inviteToken
+    let invitedRow: any = null
+
+    if (!guestId && !inviteToken) {
+      return jsonResponse({ error: 'Missing required RSVP fields: guestId or invite token required.' }, 400)
     }
 
-    if (invitedSide !== 'groom' && invitedSide !== 'bride') {
+    // If an inviteToken is provided, validate it before accepting the RSVP and load the invited row.
+    if (inviteToken) {
+      const { data, error: inviteError } = await supabase
+        .from('guests')
+        .select('guest_id, invite_token, invite_used_at, invite_expires_at, invited_side')
+        .eq('invite_token', inviteToken)
+        .maybeSingle()
+
+      if (inviteError) throw inviteError
+
+      if (!data) {
+        return jsonResponse({ error: 'Invalid invite link.' }, 403)
+      }
+
+      if (data.invite_used_at) {
+        return jsonResponse({ error: 'This invite link has already been used.' }, 409)
+      }
+
+      if (data.invite_expires_at && new Date(data.invite_expires_at) < new Date()) {
+        return jsonResponse({ error: 'This invite link has expired.' }, 409)
+      }
+
+      invitedRow = data
+    }
+
+    // If invitedRow exists (invite flow), prefer its invited_side if not provided.
+    const finalInvitedSide = invitedRow?.invited_side || invitedSide
+    if (finalInvitedSide !== 'groom' && finalInvitedSide !== 'bride') {
       return jsonResponse({ error: "Invalid invitation side. Use 'groom' or 'bride'." }, 400)
     }
 
@@ -100,11 +131,27 @@ Deno.serve(async (request: Request) => {
       return jsonResponse({ error: 'Registration is closed. Guest capacity (500) has been reached.' }, 409)
     }
 
-    const { data: existing, error: lookupError } = await supabase
-      .from('guests')
-      .select('guest_id')
-      .ilike('full_name', normalisedName)
-      .maybeSingle()
+    // Prevent duplicate registered names, but allow if the existing row is the invitedRow being filled.
+    let existing: any = null
+    let lookupError: any = null
+    if (invitedRow) {
+      const res = await supabase
+        .from('guests')
+        .select('guest_id')
+        .ilike('full_name', normalisedName)
+        .neq('guest_id', invitedRow.guest_id)
+        .maybeSingle()
+      existing = res.data
+      lookupError = res.error
+    } else {
+      const res = await supabase
+        .from('guests')
+        .select('guest_id')
+        .ilike('full_name', normalisedName)
+        .maybeSingle()
+      existing = res.data
+      lookupError = res.error
+    }
 
     if (lookupError) {
       throw lookupError
@@ -139,10 +186,39 @@ Deno.serve(async (request: Request) => {
 
     const fullInsert = {
       ...baseInsert,
-      invited_side: invitedSide,
+      invited_side: finalInvitedSide,
       accompanying_checked_in: 0,
       ...(qrCodeDataUrl ? { qr_code_data_url: qrCodeDataUrl } : {}),
       ...(ticketUrl ? { ticket_url: ticketUrl } : {}),
+      ...(inviteToken ? { invite_token: inviteToken } : {}),
+    }
+
+    // If this RSVP is for an inviteToken, update the invited row instead of inserting a new one.
+    if (invitedRow) {
+      const guestToUpdate = invitedRow.guest_id
+      const { error: updError } = await supabase.from('guests').update({
+        full_name: normalisedName,
+        attendance_status: attendanceStatus,
+        guest_count: safeGuestCount,
+        guest_names: guestNames.map((name) => String(name).trim()),
+        phone: normalisePhone(phone),
+        email: email || null,
+        token,
+        qr_code_data_url: qrCodeDataUrl || null,
+        ticket_url: ticketUrl || null,
+        invite_used_at: new Date().toISOString(),
+        invite_token: invitedRow.invite_token,
+        updated_at: now,
+      }).eq('guest_id', guestToUpdate)
+
+      if (updError) throw updError
+
+      return jsonResponse({
+        guestId: guestToUpdate,
+        ticketUrl,
+        qrCodeDataUrl,
+        qrPayload: JSON.stringify({ guestId: guestToUpdate, token }),
+      })
     }
 
     // Try full insert first; if PostgREST schema cache is stale, fall back to minimal insert
