@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+import { validateInviteToken } from '../services/rsvpService'
 import { CountdownTimer } from '../components/CountdownTimer'
 import { PublicNavbar } from '../components/PublicNavbar'
 import { SectionCard } from '../components/SectionCard'
@@ -9,12 +10,29 @@ import heroImg from '../assets/photo2-515.jpg'
 export const InvitationPage = () => {
   const location = useLocation()
   const [inviteToken, setInviteToken] = useState(null)
+  const [inviteValid, setInviteValid] = useState(null) // null=unknown, true=valid, false=invalid
 
   // Read token from url but do not auto-redirect; instead preserve it for the Register link.
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const token = params.get('token')
-    if (token) setInviteToken(token)
+    if (!token) return
+    setInviteToken(token)
+
+    // Validate token so we can show a friendly message on this page if it's invalid
+    let mounted = true
+    ;(async () => {
+      try {
+        const ok = await validateInviteToken(token)
+        if (!mounted) return
+        setInviteValid(Boolean(ok))
+      } catch (e) {
+        if (!mounted) return
+        setInviteValid(false)
+      }
+    })()
+
+    return () => { mounted = false }
   }, [location.search])
 
   return (
@@ -41,12 +59,19 @@ export const InvitationPage = () => {
             <p className="mt-4 text-base text-charcoal/75">
               joyfully invite you to celebrate their wedding ceremony and reception.
             </p>
-            <Link
-              to={inviteToken ? `/rsvp/side?token=${encodeURIComponent(inviteToken)}` : '/rsvp/side'}
-              className="mt-6 inline-flex w-fit rounded-full bg-rosewood px-6 py-3 text-sm font-semibold text-cream hover:bg-rosewood/90"
-            >
-              Register Now
-            </Link>
+            {inviteToken && inviteValid === false ? (
+              <div className="mt-6">
+                <p className="mb-3 rounded-lg border border-rosewood/20 bg-rosewood/5 px-4 py-3 text-sm text-rosewood">This invite link has expired or has already been used. If you believe this is a mistake, please contact the event organisers.</p>
+                <button disabled className="mt-2 inline-flex w-fit cursor-not-allowed rounded-full bg-rosewood/60 px-6 py-3 text-sm font-semibold text-cream opacity-60">Register Now</button>
+              </div>
+            ) : (
+              <Link
+                to={inviteToken ? `/rsvp/side?token=${encodeURIComponent(inviteToken)}` : '/rsvp/side'}
+                className="mt-6 inline-flex w-fit rounded-full bg-rosewood px-6 py-3 text-sm font-semibold text-cream hover:bg-rosewood/90"
+              >
+                Register Now
+              </Link>
+            )}
           </div>
         </section>
 

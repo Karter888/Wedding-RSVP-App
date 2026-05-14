@@ -18,6 +18,7 @@ const initialState = {
   attendanceStatus: '',
   guestCount: 0,
   guestNames: [],
+  inviteToken: null,
   phone: '',
   email: '',
 }
@@ -39,6 +40,8 @@ export const RsvpPage = () => {
     const side = searchParams.get('side')
 
     if (token) {
+      // store the invite token so the submit flow can update the placeholder guest row
+      setValues((prev) => ({ ...prev, inviteToken: token }))
       // If token present and a side was passed along, honour it so the guest doesn't have to reselect.
       if (side === 'groom' || side === 'bride') {
         setValues((prev) => ({ ...prev, invitedSide: side }))

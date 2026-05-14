@@ -19,6 +19,12 @@ const mapGuestRow = (row) => ({
   checkedIn: row.checked_in,
   checkedInAt: row.checked_in_at,
   messageStatus: row.message_status,
+  inviteToken: row.invite_token,
+  inviteUsedAt: row.invite_used_at,
+  inviteAllowedPhones: row.invite_allowed_phones || [],
+  inviteShareLimit: row.invite_share_limit || 1,
+  inviteUsedPhones: row.invite_used_phones || [],
+  isPlaceholder: !!row.is_placeholder,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 })
@@ -74,7 +80,21 @@ export const submitRsvp = async (formData) => {
     throw new Error(data.error)
   }
 
-  return { guestId, ticketUrl, qrCodeDataUrl, qrPayload: payload }
+  // The edge function may update an existing invited row and return a different guestId
+  // (when RSVP was submitted via an invite token). Prefer server-returned values when present.
+  const returnedGuestId = data?.guestId || guestId
+  const returnedTicketUrl = data?.ticketUrl || ticketUrl
+  // qrPayload may be returned as a JSON string by the function; parse it if present.
+  let returnedQrPayload = payload
+  if (data?.qrPayload) {
+    try {
+      returnedQrPayload = typeof data.qrPayload === 'string' ? JSON.parse(data.qrPayload) : data.qrPayload
+    } catch (e) {
+      returnedQrPayload = payload
+    }
+  }
+
+  return { guestId: returnedGuestId, ticketUrl: returnedTicketUrl, qrCodeDataUrl, qrPayload: returnedQrPayload }
 }
 
 export const getTicketByGuestId = async (guestId) => {
@@ -136,6 +156,39 @@ export const markThankYouSent = async (guestIds = []) => {
   return invokeEdgeFunction('mark-thank-you-sent', { guestIds })
 }
 
+export const deleteGuests = async (guestIds = []) => {
+  if (!Array.isArray(guestIds) || guestIds.length === 0) return { deleted: 0 }
+  const data = await invokeEdgeFunction('admin-delete-guests', { guestIds })
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+export const adminCreateGuest = async (guest) => {
+  const data = await invokeEdgeFunction('admin-create-guest', guest)
+  if (data?.error) throw new Error(data.error)
+  return mapGuestRow(data.guest)
+}
+
+export const adminUpdateGuest = async (guestId, updates = {}) => {
+  const data = await invokeEdgeFunction('admin-update-guest', { guestId, ...updates })
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+export const adminResetQr = async (guestId) => {
+  const data = await invokeEdgeFunction('admin-reset-qr', { guestId })
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+
+export const generateQrForGuest = async (guestId) => {
+  const data = await invokeEdgeFunction('get-ticket-by-guest-id', { guestId })
+  if (data?.error) throw new Error(data.error)
+  if (!data?.guest) throw new Error('Guest not found')
+  return mapGuestRow(data.guest)
+}
+
 export const buildWaMeLinkForGuest = (guest) => {
   if (!guest?.phone) return null
 
@@ -153,4 +206,11 @@ export const buildWaMeLinkForGuest = (guest) => {
   ].join('\n')
 
   return `https://wa.me/${phoneDigits}?text=${encodeURIComponent(message)}`
+}
+
+export const validateInviteToken = async (token) => {
+  if (!token) return false
+  const data = await invokeEdgeFunction('validate-invite-link', { token })
+  if (data?.error) return false
+  return data?.valid === true
 }

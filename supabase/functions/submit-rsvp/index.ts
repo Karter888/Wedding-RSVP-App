@@ -62,6 +62,9 @@ Deno.serve(async (request: Request) => {
     const inviteToken = (payload as any).inviteToken
     let invitedRow: any = null
 
+    // create service client early so we can use it when validating invite tokens
+    const supabase = createServiceClient()
+
     if (!guestId && !inviteToken) {
       return jsonResponse({ error: 'Missing required RSVP fields: guestId or invite token required.' }, 400)
     }
@@ -70,7 +73,7 @@ Deno.serve(async (request: Request) => {
     if (inviteToken) {
       const { data, error: inviteError } = await supabase
         .from('guests')
-        .select('guest_id, invite_token, invite_used_at, invite_expires_at, invited_side')
+        .select('guest_id, invite_token, invite_used_at, invite_expires_at, invited_side, invite_allowed_phones, invite_used_phones, invite_share_limit')
         .eq('invite_token', inviteToken)
         .maybeSingle()
 
@@ -80,10 +83,7 @@ Deno.serve(async (request: Request) => {
         return jsonResponse({ error: 'Invalid invite link.' }, 403)
       }
 
-      if (data.invite_used_at) {
-        return jsonResponse({ error: 'This invite link has already been used.' }, 409)
-      }
-
+      // Check expiry as before
       if (data.invite_expires_at && new Date(data.invite_expires_at) < new Date()) {
         return jsonResponse({ error: 'This invite link has expired.' }, 409)
       }
@@ -91,8 +91,10 @@ Deno.serve(async (request: Request) => {
       invitedRow = data
     }
 
-    // If invitedRow exists (invite flow), prefer its invited_side if not provided.
-    const finalInvitedSide = invitedRow?.invited_side || invitedSide
+    // If invitedRow exists (invite flow), prefer an explicit invitedSide provided by the form
+    // over the placeholder's stored invited_side. This allows guests to choose their side
+    // even when the invite placeholder was created without a side.
+    const finalInvitedSide = invitedSide || invitedRow?.invited_side
     if (finalInvitedSide !== 'groom' && finalInvitedSide !== 'bride') {
       return jsonResponse({ error: "Invalid invitation side. Use 'groom' or 'bride'." }, 400)
     }
@@ -110,7 +112,6 @@ Deno.serve(async (request: Request) => {
       return jsonResponse({ error: 'All accompanying guests must have names.' }, 400)
     }
 
-    const supabase = createServiceClient()
     const normalisedName = fullName.trim()
 
     const { data: capacityRows, error: capacityError } = await supabase
@@ -177,6 +178,7 @@ Deno.serve(async (request: Request) => {
       phone: normalisePhone(phone),
       email: email || null,
       token,
+      is_placeholder: false,
       checked_in: false,
       checked_in_at: null,
       message_status: 'pending',
@@ -196,20 +198,69 @@ Deno.serve(async (request: Request) => {
     // If this RSVP is for an inviteToken, update the invited row instead of inserting a new one.
     if (invitedRow) {
       const guestToUpdate = invitedRow.guest_id
-      const { error: updError } = await supabase.from('guests').update({
+
+      // Enforce per-phone burn-after-use logic if allowed phones specified
+      const allowedPhones: string[] = Array.isArray(invitedRow.invite_allowed_phones)
+        ? invitedRow.invite_allowed_phones
+        : []
+      const usedPhones: string[] = Array.isArray(invitedRow.invite_used_phones)
+        ? invitedRow.invite_used_phones
+        : []
+      const shareLimit: number = Number(invitedRow.invite_share_limit || 1)
+
+      let normalisedGuestPhone = normalisePhone(phone)
+
+      if (allowedPhones.length > 0) {
+        if (!normalisedGuestPhone) {
+          return jsonResponse({ error: 'This invite requires a WhatsApp phone number to register.' }, 400)
+        }
+        const allowedMatches = allowedPhones.map((p) => String(p)).includes(normalisedGuestPhone)
+        if (!allowedMatches) {
+          return jsonResponse({ error: 'This phone number is not authorised for this invite.' }, 403)
+        }
+      }
+
+      // If a phone is provided and already used, block duplicate use
+      if (normalisedGuestPhone && usedPhones.map(String).includes(normalisedGuestPhone)) {
+        return jsonResponse({ error: 'This invite has already been used by this phone number.' }, 409)
+      }
+
+      // Determine next used phones list. If allowedPhones is empty (open invite), count anonymous uses by
+      // appending a generated marker so shareLimit is honoured even without phone numbers.
+      const nextUsedPhones = [...usedPhones.filter(Boolean)]
+      if (normalisedGuestPhone) {
+        nextUsedPhones.push(normalisedGuestPhone)
+      } else if (allowedPhones.length === 0) {
+        // anonymous use: append a timestamp marker to count towards share limit
+        nextUsedPhones.push(`anon-${Date.now()}`)
+      }
+
+      const shouldMarkUsed = nextUsedPhones.length >= Math.max(1, shareLimit)
+
+      const updatePayload: any = {
         full_name: normalisedName,
         attendance_status: attendanceStatus,
         guest_count: safeGuestCount,
         guest_names: guestNames.map((name) => String(name).trim()),
+        // Persist the selected invited side (guest choice takes precedence)
+        invited_side: finalInvitedSide,
         phone: normalisePhone(phone),
         email: email || null,
         token,
+        is_placeholder: false,
         qr_code_data_url: qrCodeDataUrl || null,
         ticket_url: ticketUrl || null,
-        invite_used_at: new Date().toISOString(),
-        invite_token: invitedRow.invite_token,
+        invite_used_phones: nextUsedPhones,
+        // preserve invite_token unless we need to burn the invite when share limit reached
+        ...(shouldMarkUsed ? { invite_token: null } : { invite_token: invitedRow.invite_token }),
         updated_at: now,
-      }).eq('guest_id', guestToUpdate)
+      }
+
+      if (shouldMarkUsed) {
+        updatePayload.invite_used_at = new Date().toISOString()
+      }
+
+      const { error: updError } = await supabase.from('guests').update(updatePayload).eq('guest_id', guestToUpdate)
 
       if (updError) throw updError
 

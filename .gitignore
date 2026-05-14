@@ -33,3 +33,5 @@ functions/.env.*
 
 # Supabase local metadata
 supabase/.temp/
+
+.venv

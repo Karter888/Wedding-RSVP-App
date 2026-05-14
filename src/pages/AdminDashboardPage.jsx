@@ -13,15 +13,29 @@ import {
   sendThankYouBatches,
   markThankYouSent,
   updateCheckInStatus,
+  deleteGuests,
+  adminCreateGuest,
+  adminUpdateGuest,
+  adminResetQr,
+  getTicketByGuestId,
 } from '../services/rsvpService'
 import inviteService from '../services/inviteService'
+import { buildQrPayload, generateQrCodeWithRetry } from '../utils/qr'
 
 const formatInvitedSideLabel = (side) => (side === 'groom' ? "Groom's Side" : "Bride's Side")
 
-const AccompanyingGuestList = ({ guest, onAdjust }) => {
+const AccompanyingGuestList = ({ guest, onAdjust, onSetCount }) => {
   const total = Number(guest.guestCount || 0)
   const checkedIn = Number(guest.accompanyingCheckedIn || 0)
   const guestNames = Array.isArray(guest.guestNames) ? guest.guestNames : []
+
+  const setCount = (newCount) => {
+    if (typeof onSetCount === 'function') return onSetCount(newCount)
+    if (typeof onAdjust === 'function') {
+      const delta = newCount - checkedIn
+      return onAdjust(delta)
+    }
+  }
 
   return (
     <div className="ml-4 space-y-2">
@@ -42,9 +56,21 @@ const AccompanyingGuestList = ({ guest, onAdjust }) => {
                 key={`${guest.guestId}-accompanying-${idx}`}
                 className="flex items-center justify-between gap-3 rounded-lg border border-rosewood/10 bg-white/80 px-3 py-2 text-sm text-charcoal/80"
               >
-                <div>
-                  <p className="font-medium text-charcoal">{name || `Guest ${idx + 1}`}</p>
-                  <p className="text-xs text-charcoal/50">Accompanying guest {idx + 1}</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={isCheckedIn}
+                    onChange={(e) => {
+                      if (e.target.checked) setCount(idx + 1)
+                      else setCount(idx)
+                    }}
+                    className="h-4 w-4 rounded-md border-rosewood/30"
+                    aria-label={`Toggle accompanying guest ${idx + 1}`}
+                  />
+                  <div>
+                    <p className="font-medium text-charcoal">{name || `Guest ${idx + 1}`}</p>
+                    <p className="text-xs text-charcoal/50">Accompanying guest {idx + 1}</p>
+                  </div>
                 </div>
                 <span
                   className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider ${
@@ -92,6 +118,7 @@ export const AdminDashboardPage = () => {
   const [loading, setLoading] = useState(true)
   const [manualCheckInGuest, setManualCheckInGuest] = useState(null)
   const [expandedGuests, setExpandedGuests] = useState(new Set())
+  const [selectedGuests, setSelectedGuests] = useState(new Set())
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalGuests, setTotalGuests] = useState(0)
@@ -125,7 +152,14 @@ export const AdminDashboardPage = () => {
   }, [filters.checkedIn, filters.status, deferredSearch])
 
   const visibleGuests = useMemo(() => {
-    return guests
+    // Hide placeholder invite rows created by the invite-generation function
+    // These rows typically have an inviteToken, no inviteUsedAt, and default names.
+    return guests.filter((g) => {
+      const fromName = String(g.fullName || '').toLowerCase()
+      const isNamePlaceholder = fromName.startsWith('invited guest') || fromName === 'guest' || fromName === 'n/a'
+      const isPlaceholderInvite = Boolean(g.isPlaceholder) || (g.inviteToken && !g.inviteUsedAt && isNamePlaceholder)
+      return !isPlaceholderInvite
+    })
   }, [guests])
 
   const guestsByInvitedSide = useMemo(() => {
@@ -138,15 +172,17 @@ export const AdminDashboardPage = () => {
   }, [visibleGuests])
 
   const stats = useMemo(() => {
-    const attending = guests.filter((guest) => guest.attendanceStatus === 'Attending').length
-    const maybe = guests.filter((guest) => guest.attendanceStatus === 'Maybe').length
-    const notAttending = guests.filter((guest) => guest.attendanceStatus === 'Not Attending').length
-    const checkedIn = guests.filter((guest) => guest.checkedIn).length
-    const accompanyingGuests = guests.reduce((sum, guest) => sum + Number(guest.guestCount || 0), 0)
-    const invitedPeople = guests.length + accompanyingGuests
+    // Compute stats only from visible (non-placeholder) guests so admins see real numbers
+    const dataset = visibleGuests
+    const attending = dataset.filter((guest) => guest.attendanceStatus === 'Attending').length
+    const maybe = dataset.filter((guest) => guest.attendanceStatus === 'Maybe').length
+    const notAttending = dataset.filter((guest) => guest.attendanceStatus === 'Not Attending').length
+    const checkedIn = dataset.filter((guest) => guest.checkedIn).length
+    const accompanyingGuests = dataset.reduce((sum, guest) => sum + Number(guest.guestCount || 0), 0)
+    const invitedPeople = dataset.length + accompanyingGuests
 
     return {
-      total: guests.length,
+      total: dataset.length,
       invitedPeople,
       accompanyingGuests,
       attending,
@@ -154,7 +190,7 @@ export const AdminDashboardPage = () => {
       notAttending,
       checkedIn,
     }
-  }, [guests])
+  }, [visibleGuests])
 
   const handleResend = async (guestId) => {
     const guest = guests.find((entry) => entry.guestId === guestId)
@@ -169,6 +205,87 @@ export const AdminDashboardPage = () => {
     setActionMessage('Open the wa.me link and send the reminder with QR ticket manually.')
     setWaMeLink(link)
     window.open(link, '_blank', 'noopener,noreferrer')
+  }
+
+  const handleOpenEditGuest = (guest) => {
+    setEditingGuest({ ...guest })
+    setShowEditGuest(true)
+  }
+  const validateGuest = (form) => {
+    const errors = {}
+    if (!form || !String(form.fullName || '').trim()) errors.fullName = 'Full name is required'
+    if (form.email && String(form.email).trim()) {
+      const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!re.test(String(form.email).trim())) errors.email = 'Invalid email address'
+    }
+    if (typeof form.guestCount !== 'undefined') {
+      const num = Number(form.guestCount)
+      if (!Number.isInteger(num) || num < 0) errors.guestCount = 'Guest count must be 0 or a positive integer'
+    }
+    if (form.phone && String(form.phone).trim()) {
+      const digits = String(form.phone).replace(/\D/g, '')
+      if (digits.length < 6) errors.phone = 'Phone number seems too short'
+    }
+    return errors
+  }
+
+  // Admin-side helper: keep phone as local-format starting with 0 (e.g. 0969496996)
+  const sanitizeLocalPhone = (raw) => {
+    if (!raw) return ''
+    const digits = String(raw).replace(/\D/g, '')
+    // if starts with 260 (full country), convert to leading 0 + rest
+    if (digits.startsWith('260')) {
+      const rest = digits.slice(3)
+      return rest.length === 9 ? `0${rest}`.slice(0, 10) : (`0${rest}`).slice(0, 10)
+    }
+    // if starts with 0, keep up to 10 (0 + 9 digits)
+    if (digits.startsWith('0')) return digits.slice(0, 10)
+    // if 9 digits entered without leading zero, prepend 0
+    if (digits.length === 9) return `0${digits}`
+    return digits.slice(0, 10)
+  }
+
+  const handleSaveEditGuest = async () => {
+    if (!editingGuest) return
+    const errs = validateGuest(editingGuest)
+    setEditGuestErrors(errs)
+    if (Object.keys(errs).length > 0) return
+    try {
+      await adminUpdateGuest(editingGuest.guestId, {
+        fullName: editingGuest.fullName,
+        phone: editingGuest.phone,
+        email: editingGuest.email,
+        invitedSide: editingGuest.invitedSide,
+        guestCount: Number(editingGuest.guestCount || 0),
+      })
+      setShowEditGuest(false)
+      setEditingGuest(null)
+      setEditGuestErrors({})
+      await refreshGuests()
+    } catch (err) {
+      setActionMessage(`Failed to save guest: ${err.message}`)
+    }
+  }
+
+  const handleCreateGuest = async () => {
+    const errs = validateGuest(newGuestForm)
+    setAddGuestErrors(errs)
+    if (Object.keys(errs).length > 0) return
+    try {
+      await adminCreateGuest({
+        fullName: newGuestForm.fullName,
+        invitedSide: newGuestForm.invitedSide,
+        phone: newGuestForm.phone || null,
+        email: newGuestForm.email || null,
+        guestCount: Number(newGuestForm.guestCount || 0),
+      })
+      setShowAddGuest(false)
+      setNewGuestForm({ fullName: '', invitedSide: 'groom', phone: '', email: '', guestCount: 0 })
+      setAddGuestErrors({})
+      await refreshGuests()
+    } catch (err) {
+      setActionMessage(`Failed to create guest: ${err.message}`)
+    }
   }
 
   const handleManualCheckIn = async (guest) => {
@@ -187,6 +304,66 @@ export const AdminDashboardPage = () => {
     const records = await refreshGuests()
     const updated = records.find((entry) => entry.guestId === guest.guestId)
     setManualCheckInGuest(updated || null)
+  }
+
+  const handleSetAccompanyingCheckIn = async (guest, newCount) => {
+    const next = Math.min(Number(guest.guestCount || 0), Math.max(0, Number(newCount || 0)))
+    await updateCheckInStatus(guest.guestId, true, next)
+    const records = await refreshGuests()
+    const updated = records.find((entry) => entry.guestId === guest.guestId)
+    setManualCheckInGuest(updated || null)
+  }
+
+  const handleGenerateQr = async (guest) => {
+    if (!guest?.guestId) {
+      setActionMessage('Failed to generate QR: missing guest id')
+      return
+    }
+
+    try {
+      const record = await getTicketByGuestId(guest.guestId)
+      if (!record) throw new Error('Guest not found')
+      const payload = buildQrPayload({ guestId: record.guestId, token: record.token })
+      const dataUrl = await generateQrCodeWithRetry(payload)
+      const w = window.open()
+      if (w) w.document.write(`<img src="${dataUrl}"/>`)
+    } catch (err) {
+      // Show the full error message (may include status/body details from edge function)
+      setActionMessage(`Failed to generate QR: ${err && err.message ? err.message : String(err)}`)
+      console.error('handleGenerateQr error:', err)
+    }
+  }
+
+  const handleUncheckGuest = async (guest) => {
+    try {
+      await updateCheckInStatus(guest.guestId, false, 0)
+      await refreshGuests()
+    } catch (err) {
+      setActionMessage(`Failed to uncheck guest: ${err.message}`)
+    }
+  }
+
+  const handleResetQr = async (guest) => {
+    try {
+      await adminResetQr(guest.guestId)
+      await refreshGuests()
+      setActionMessage('QR reset for guest')
+    } catch (err) {
+      setActionMessage(`Failed to reset QR: ${err.message}`)
+    }
+  }
+
+  const handleUncheckAll = async () => {
+    try {
+      setActionMessage('Unchecking all guests...')
+      const records = await refreshGuests()
+      const checked = records.filter((g) => g.checkedIn)
+      await Promise.all(checked.map((g) => updateCheckInStatus(g.guestId, false, 0)))
+      await refreshGuests()
+      setActionMessage('All guests unchecked')
+    } catch (err) {
+      setActionMessage(`Failed to uncheck all: ${err.message}`)
+    }
   }
 
   const handleScan = async (detectedCodes) => {
@@ -218,7 +395,6 @@ export const AdminDashboardPage = () => {
     const tableTopStart = 36
 
     const columns = [
-      { key: 'present', label: 'Present', width: 16 },
       { key: 'checked', label: 'Checked In', width: 20 },
       { key: 'name', label: 'Guest Name', width: 40 },
       { key: 'side', label: 'Invitation Side', width: 30 },
@@ -244,12 +420,12 @@ export const AdminDashboardPage = () => {
       doc.text(`Generated: ${new Date().toLocaleString()}`, margin, 22)
 
       const summary = [
-        `Primary RSVPs: ${guests.length}`,
-        `Accompanying Guests: ${stats.accompanyingGuests}`,
-        `Total Invited People: ${stats.invitedPeople}`,
-        `Groom's Side: ${guests.filter((guest) => guest.invitedSide === 'groom').length}`,
-        `Bride's Side: ${guests.filter((guest) => guest.invitedSide === 'bride').length}`,
-      ].join('  |  ')
+          `Primary RSVPs: ${visibleGuests.length}`,
+          `Accompanying Guests: ${stats.accompanyingGuests}`,
+          `Total Invited People: ${stats.invitedPeople}`,
+          `Groom's Side: ${visibleGuests.filter((guest) => guest.invitedSide === 'groom').length}`,
+          `Bride's Side: ${visibleGuests.filter((guest) => guest.invitedSide === 'bride').length}`,
+        ].join('  |  ')
       doc.text(summary, margin, 28)
 
       let x = margin
@@ -274,7 +450,7 @@ export const AdminDashboardPage = () => {
     doc.setFont('times', 'normal')
     doc.setFontSize(9)
 
-    guests.forEach((guest) => {
+    visibleGuests.forEach((guest) => {
       const accompanyingNames = Array.isArray(guest.guestNames)
         ? guest.guestNames.filter(Boolean).join(', ')
         : ''
@@ -308,9 +484,7 @@ export const AdminDashboardPage = () => {
       let x = margin
       columns.forEach((column) => {
         doc.rect(x, y, column.width, rowHeight)
-        if (column.key === 'present') {
-          drawCheckbox(x + 6.5, y + 2)
-        } else if (column.key === 'checked') {
+        if (column.key === 'checked') {
           drawCheckbox(x + 8, y + 2, Boolean(guest.checkedIn))
         } else if (column.key === 'name') {
           doc.text(nameLines, x + 1, y + 5)
@@ -336,11 +510,19 @@ export const AdminDashboardPage = () => {
   const [thankYouStatus, setThankYouStatus] = useState('')
   const [thankYouLoading, setThankYouLoading] = useState(false)
   const [showInviteModal, setShowInviteModal] = useState(false)
-  const [inviteForm, setInviteForm] = useState({ fullName: '', invitedSide: 'groom', phone: '', email: '', expiresInMinutes: 1440 })
+  // invite modal now only collects allowed phone numbers; shareLimit is auto-derived
+  const [inviteAdvanced, setInviteAdvanced] = useState({ shareLimit: 1, allowedPhones: '' })
   const [inviteGenerating, setInviteGenerating] = useState(false)
   const [inviteStatus, setInviteStatus] = useState('')
   const [lastInviteLink, setLastInviteLink] = useState('')
   const [selectedTable, setSelectedTable] = useState('all')
+  const [showEditGuest, setShowEditGuest] = useState(false)
+  const [editingGuest, setEditingGuest] = useState(null)
+  const [showAddGuest, setShowAddGuest] = useState(false)
+  const [newGuestForm, setNewGuestForm] = useState({ fullName: '', invitedSide: 'groom', phone: '', email: '', guestCount: 0 })
+  const [addGuestErrors, setAddGuestErrors] = useState({})
+  const [editGuestErrors, setEditGuestErrors] = useState({})
+  const [confirmUncheckAll, setConfirmUncheckAll] = useState(false)
 
   const triggerThankYou = async () => {
     setThankYouLoading(true)
@@ -376,6 +558,7 @@ export const AdminDashboardPage = () => {
       await markThankYouSent(guestIds)
       setThankYouStatus('All thank you messages marked as sent!')
       setThankYouLinks([])
+      setConfirmUncheckAll(false)
       await refreshGuests()
     } catch (error) {
       setThankYouStatus(`Error marking sent: ${error.message}`)
@@ -388,13 +571,33 @@ export const AdminDashboardPage = () => {
     setInviteGenerating(true)
     setInviteStatus('')
     try {
-      const { inviteToken } = await inviteService.createInvite({ expiresInMinutes: inviteForm.expiresInMinutes })
+      const allowedPhonesArray = inviteAdvanced.allowedPhones
+        .split(/[,\n]/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+
+      const shareLimit = allowedPhonesArray.length || 1
+
+      // Convert local-format allowed phones (starting with 0) to E.164 (+260...) for the backend
+      const allowedE164 = allowedPhonesArray.map((p) => {
+        const local = sanitizeLocalPhone(p)
+        const digits = String(local).replace(/\D/g, '')
+        if (!digits) return null
+        if (digits.startsWith('0')) return `+260${digits.slice(1)}`
+        if (digits.startsWith('260')) return `+${digits}`
+        return `+${digits}`
+      }).filter(Boolean)
+
+      const { inviteToken } = await inviteService.createInvite({
+        shareLimit: Number(shareLimit),
+        allowedPhones: allowedE164,
+      })
       const link = `${window.location.origin}/?token=${inviteToken}`
       await navigator.clipboard.writeText(link)
       setLastInviteLink(link)
       setInviteStatus('Invite link copied to clipboard!')
       setShowInviteModal(false)
-      setInviteForm({ fullName: '', invitedSide: 'groom', phone: '', email: '', expiresInMinutes: 1440 })
+      setInviteAdvanced({ shareLimit: 1, allowedPhones: '' })
       await refreshGuests()
     } catch (error) {
       setInviteStatus(`Failed: ${error.message}`)
@@ -417,6 +620,28 @@ export const AdminDashboardPage = () => {
       else next.add(guestId)
       return next
     })
+  }
+
+  const toggleSelectGuest = (guestId, checked) => {
+    setSelectedGuests((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(guestId)
+      else next.delete(guestId)
+      return next
+    })
+  }
+
+  const removeSelectedGuests = async () => {
+    if (selectedGuests.size === 0) return
+    if (!confirm(`Remove ${selectedGuests.size} selected guest(s)? This cannot be undone.`)) return
+    try {
+      const ids = Array.from(selectedGuests)
+      await deleteGuests(ids)
+      setSelectedGuests(new Set())
+      await refreshGuests()
+    } catch (err) {
+      setActionMessage(`Failed to delete: ${err.message}`)
+    }
   }
 
   const GuestTableSection = ({ title, subtitle, guestsForSection, gradientClass }) => (
@@ -460,6 +685,13 @@ export const AdminDashboardPage = () => {
       <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between md:gap-0">
         <div className="flex-1">
           <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={selectedGuests.has(guest.guestId)}
+              onChange={(e) => toggleSelectGuest(guest.guestId, e.target.checked)}
+              className="h-4 w-4 rounded-md border-rosewood/30"
+              aria-label={`Select ${guest.fullName}`}
+            />
             <span className={`inline-block h-2 w-2 rounded-full ${guest.checkedIn ? 'bg-emerald-500' : 'bg-amber-300'}`}></span>
             <p className="font-semibold text-charcoal">{guest.fullName}</p>
           </div>
@@ -486,16 +718,28 @@ export const AdminDashboardPage = () => {
           >
             WhatsApp
           </button>
+                  
           <button
-            onClick={() => handleManualCheckIn(guest)}
+            onClick={() => handleGenerateQr(guest)}
+            className="rounded-full border border-rosewood/30 px-3 py-1.5 text-xs text-rosewood hover:bg-rosewood/5"
+          >
+            QR
+          </button>
+          <button
+            onClick={() => handleOpenEditGuest(guest)}
+            className="rounded-full border border-rosewood/30 px-3 py-1.5 text-xs text-rosewood hover:bg-rosewood/5"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => (guest.checkedIn ? handleUncheckGuest(guest) : handleManualCheckIn(guest))}
             className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
               guest.checkedIn
-                ? 'bg-emerald-500 text-white cursor-default'
+                ? 'bg-amber-300 text-charcoal hover:bg-amber-200'
                 : 'bg-slategreen text-white hover:bg-slategreen/90'
             }`}
-            disabled={guest.checkedIn}
           >
-            {guest.checkedIn ? '✓ Checked In' : 'Check In'}
+            {guest.checkedIn ? 'Uncheck' : 'Check In'}
           </button>
           {Number(guest.guestCount || 0) > 0 && (
             <button
@@ -509,9 +753,13 @@ export const AdminDashboardPage = () => {
       </div>
 
       {/* Accompanying guests sub-table */}
-      {isExpanded && Number(guest.guestCount || 0) > 0 && (
+          {isExpanded && Number(guest.guestCount || 0) > 0 && (
         <div className="border-t border-rosewood/5 bg-cream/30 px-4 py-3">
-          <AccompanyingGuestList guest={guest} onAdjust={(delta) => handleAccompanyingCheckIn(guest, delta)} />
+          <AccompanyingGuestList
+            guest={guest}
+            onAdjust={(delta) => handleAccompanyingCheckIn(guest, delta)}
+            onSetCount={(newCount) => handleSetAccompanyingCheckIn(guest, newCount)}
+          />
         </div>
       )}
     </div>
@@ -533,6 +781,13 @@ export const AdminDashboardPage = () => {
                 className="rounded-full border border-rosewood/30 px-4 py-2 text-sm font-semibold text-rosewood hover:bg-rosewood/5"
               >
                 Generate Invite Link
+              </button>
+              
+              <button
+                onClick={() => setShowAddGuest(true)}
+                className="rounded-full border border-rosewood/30 px-4 py-2 text-sm font-semibold text-rosewood hover:bg-rosewood/5"
+              >
+                Add Guest
               </button>
               <UserButton />
             </div>
@@ -639,6 +894,13 @@ export const AdminDashboardPage = () => {
                   Showing page {page} of {totalPages || 1} · {totalGuests} guest{totalGuests === 1 ? '' : 's'} total
                 </p>
                 <div className="flex items-center gap-2">
+                        <button
+                          onClick={removeSelectedGuests}
+                          disabled={selectedGuests.size === 0}
+                          className="rounded-full border border-rosewood/20 px-3 py-1.5 text-xs font-semibold text-rosewood hover:bg-rosewood/5 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Remove Selected
+                        </button>
                   <button
                     onClick={() => setPage((current) => Math.max(1, current - 1))}
                     disabled={page <= 1 || loading}
@@ -658,7 +920,7 @@ export const AdminDashboardPage = () => {
 
               {/* Guest Table selector */}
               <div className="mt-6">
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => setSelectedTable('all')}
                     className={`rounded-full px-3 py-1.5 text-sm font-semibold ${selectedTable === 'all' ? 'bg-rosewood text-cream' : 'border border-rosewood/20 text-rosewood hover:bg-rosewood/5'}`}
@@ -677,6 +939,22 @@ export const AdminDashboardPage = () => {
                   >
                     Bride ({guestsByInvitedSide.bride?.length || 0})
                   </button>
+                  
+                  <div className="ml-auto">
+                  <button
+                    onClick={() => {
+                      if (confirmUncheckAll) {
+                        handleUncheckAll()
+                        setConfirmUncheckAll(false)
+                      } else {
+                        setConfirmUncheckAll(true)
+                      }
+                    }}
+                    className={`rounded-full border px-4 py-2 text-sm transition ${confirmUncheckAll ? 'border-rosewood bg-rosewood text-cream' : 'border-charcoal/20 text-charcoal hover:bg-charcoal/5'}`}
+                  >
+                    {confirmUncheckAll ? 'Click again to confirm' : 'Uncheck All'}
+                  </button>
+                  </div>
                 </div>
 
                 <div className="mt-4">
@@ -759,9 +1037,10 @@ export const AdminDashboardPage = () => {
 
                 <div className="mt-5 rounded-lg border border-rosewood/15 bg-cream p-4">
                   <AccompanyingGuestList
-                    guest={manualCheckInGuest}
-                    onAdjust={(delta) => handleAccompanyingCheckIn(manualCheckInGuest, delta)}
-                  />
+                      guest={manualCheckInGuest}
+                      onAdjust={(delta) => handleAccompanyingCheckIn(manualCheckInGuest, delta)}
+                      onSetCount={(newCount) => handleSetAccompanyingCheckIn(manualCheckInGuest, newCount)}
+                    />
                 </div>
 
                 <div className="mt-5 flex justify-end">
@@ -776,25 +1055,109 @@ export const AdminDashboardPage = () => {
             </div>
           )}
 
+          {/* Edit Guest Modal */}
+          {showEditGuest && editingGuest && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-soft">
+                <p className="text-xs uppercase tracking-wider text-rosewood">Edit Guest</p>
+                <h3 className="mt-2 font-heading text-3xl text-charcoal">{editingGuest.fullName || 'Edit Guest'}</h3>
+
+                <div className="mt-5 space-y-3">
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Full name</label>
+                    <input value={editingGuest.fullName} onChange={(e) => setEditingGuest((g) => ({ ...g, fullName: e.target.value }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {editGuestErrors.fullName && <p className="text-xs text-rosewood mt-1">{editGuestErrors.fullName}</p>}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Phone</label>
+                    <input value={editingGuest.phone || ''} onChange={(e) => setEditingGuest((g) => ({ ...g, phone: sanitizeLocalPhone(e.target.value) }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {editGuestErrors.phone && <p className="text-xs text-rosewood mt-1">{editGuestErrors.phone}</p>}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Email</label>
+                    <input value={editingGuest.email || ''} onChange={(e) => setEditingGuest((g) => ({ ...g, email: e.target.value }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {editGuestErrors.email && <p className="text-xs text-rosewood mt-1">{editGuestErrors.email}</p>}
+                  </div>
+                </div>
+
+                <div className="mt-5 flex justify-end gap-2">
+                  <button onClick={() => setShowEditGuest(false)} className="rounded-full border border-charcoal/20 px-4 py-2 text-sm text-charcoal hover:bg-charcoal/5">Cancel</button>
+                  <button disabled={Object.keys(validateGuest(editingGuest || {})).length > 0} onClick={handleSaveEditGuest} className="rounded-full bg-rosewood px-4 py-2 text-sm font-semibold text-cream hover:bg-rosewood/90 disabled:opacity-50">Save</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Add Guest Modal */}
+          {showAddGuest && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-soft">
+                <p className="text-xs uppercase tracking-wider text-rosewood">Add Guest</p>
+                <h3 className="mt-2 font-heading text-3xl text-charcoal">Create New Guest</h3>
+
+                <div className="mt-5 space-y-3">
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Full name</label>
+                    <input value={newGuestForm.fullName} onChange={(e) => setNewGuestForm((g) => ({ ...g, fullName: e.target.value }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {addGuestErrors.fullName && <p className="text-xs text-rosewood mt-1">{addGuestErrors.fullName}</p>}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Phone</label>
+                    <input value={newGuestForm.phone} onChange={(e) => setNewGuestForm((g) => ({ ...g, phone: sanitizeLocalPhone(e.target.value) }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {addGuestErrors.phone && <p className="text-xs text-rosewood mt-1">{addGuestErrors.phone}</p>}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Email</label>
+                    <input value={newGuestForm.email} onChange={(e) => setNewGuestForm((g) => ({ ...g, email: e.target.value }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {addGuestErrors.email && <p className="text-xs text-rosewood mt-1">{addGuestErrors.email}</p>}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Guest count</label>
+                    <input type="number" value={newGuestForm.guestCount} onChange={(e) => setNewGuestForm((g) => ({ ...g, guestCount: Number(e.target.value) }))} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm" />
+                    {addGuestErrors.guestCount && <p className="text-xs text-rosewood mt-1">{addGuestErrors.guestCount}</p>}
+                  </div>
+                </div>
+
+                <div className="mt-5 flex justify-end gap-2">
+                  <button onClick={() => setShowAddGuest(false)} className="rounded-full border border-charcoal/20 px-4 py-2 text-sm text-charcoal hover:bg-charcoal/5">Cancel</button>
+                  <button disabled={Object.keys(validateGuest(newGuestForm)).length > 0} onClick={handleCreateGuest} className="rounded-full bg-rosewood px-4 py-2 text-sm font-semibold text-cream hover:bg-rosewood/90 disabled:opacity-50">Create</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Invite Modal */}
           {showInviteModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
               <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-soft">
                 <p className="text-xs uppercase tracking-wider text-rosewood">Generate Invite</p>
                 <h3 className="mt-2 font-heading text-3xl text-charcoal">Create Invite Link</h3>
-                <p className="mt-3 text-sm text-charcoal/80">Generate a single-use invite link that lands on the invitation page. Set only the expiry timer.</p>
+                <p className="mt-3 text-sm text-charcoal/80">Generate an invite link with optional share limits and allowed phone numbers.</p>
 
                 <div className="mt-5 space-y-3">
                   <div>
-                    <label className="text-sm font-semibold text-charcoal">Expires (minutes)</label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={inviteForm.expiresInMinutes}
-                      onChange={(e) => setInviteForm((p) => ({ ...p, expiresInMinutes: Number(e.target.value) }))}
-                      className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm"
+                    <label className="text-sm font-semibold text-charcoal">Guest WhatsApp numbers</label>
+                    <textarea
+                      placeholder="096..., 097..., or one per line"
+                      value={inviteAdvanced.allowedPhones}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        // normalize each line to local format using sanitizeLocalPhone
+                        const arr = raw
+                          .split(/[,\n]/)
+                          .map((p) => p.trim())
+                          .filter(Boolean)
+                          .map((p) => sanitizeLocalPhone(p))
+                        setInviteAdvanced({ allowedPhones: raw, shareLimit: arr.length || 1 })
+                      }}
+                      className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm h-24"
                     />
-                    <p className="text-xs text-charcoal/50 mt-1">Link will land on the public invitation page; invite token is attached in the URL.</p>
+                    <p className="text-xs text-charcoal/50 mt-1">Enter the guest WhatsApp numbers (comma separated or one per line). Share limit will be set automatically to the number of phones entered.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-semibold text-charcoal">Share limit (auto)</label>
+                    <input type="number" readOnly value={inviteAdvanced.shareLimit || 1} className="mt-1 w-full rounded-lg border border-rosewood/20 bg-white px-3 py-2 text-sm bg-gray-50" />
                   </div>
 
                   {inviteStatus && (
