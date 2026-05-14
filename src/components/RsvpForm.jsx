@@ -123,7 +123,7 @@ export const RsvpForm = ({
               className="flex-1 px-3 py-2 text-sm bg-transparent outline-none"
               value={localPhone}
               onChange={handlePhoneChange}
-              placeholder="0969496996"
+              placeholder="09#########"
               maxLength={10}
               inputMode="numeric"
             />

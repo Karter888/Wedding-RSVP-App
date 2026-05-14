@@ -237,6 +237,55 @@ Deno.serve(async (request: Request) => {
 
       const shouldMarkUsed = nextUsedPhones.length >= Math.max(1, shareLimit)
 
+      // If this invite has explicit allowed phones (one link sent to multiple numbers), do NOT overwrite
+      // the original placeholder row for each submission. Instead, create a new guest row for this submission
+      // so each phone/user gets their own ticket/record, and update the invited placeholder's invite_used_phones
+      // to track usage and burn the token when share limit is reached.
+      if (Array.isArray(allowedPhones) && allowedPhones.length > 0) {
+        const newGuestId = guestId || crypto.randomUUID()
+
+        const insertPayload: any = {
+          guest_id: newGuestId,
+          full_name: normalisedName,
+          invited_side: finalInvitedSide,
+          attendance_status: attendanceStatus,
+          guest_count: safeGuestCount,
+          guest_names: guestNames.map((name) => String(name).trim()),
+          phone: normalisePhone(phone),
+          email: email || null,
+          token,
+          is_placeholder: false,
+          checked_in: false,
+          checked_in_at: null,
+          message_status: 'pending',
+          qr_code_data_url: qrCodeDataUrl || null,
+          ticket_url: ticketUrl || null,
+          created_at: now,
+          updated_at: now,
+        }
+
+        const { error: insertErr } = await supabase.from('guests').insert(insertPayload)
+        if (insertErr) throw insertErr
+
+        // Update the invited placeholder's used phones and potentially burn the invite
+        const invitedUpdate: any = {
+          invite_used_phones: nextUsedPhones,
+          ...(shouldMarkUsed ? { invite_token: null, invite_used_at: new Date().toISOString() } : {}),
+          updated_at: now,
+        }
+
+        const { error: invitedUpdErr } = await supabase.from('guests').update(invitedUpdate).eq('guest_id', guestToUpdate)
+        if (invitedUpdErr) throw invitedUpdErr
+
+        return jsonResponse({
+          guestId: newGuestId,
+          ticketUrl,
+          qrCodeDataUrl,
+          qrPayload: JSON.stringify({ guestId: newGuestId, token }),
+        })
+      }
+
+      // Default: single invite flow updates the invited placeholder row (existing behaviour)
       const updatePayload: any = {
         full_name: normalisedName,
         attendance_status: attendanceStatus,
